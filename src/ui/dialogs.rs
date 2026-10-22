@@ -40,6 +40,22 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             match dialog {
                 // Drawn by cover_art above.
                 Dialog::CoverArt { .. } => {}
+                Dialog::ServerConnections => {
+                    if app.server_form.editing { crate::subsonic::ui::connection_form(app, ui); }
+                    else { crate::subsonic::ui::connections(app, ui); }
+                    ui.add_space(12.0);
+                    if theme::soft_button(ui, &palette, None, "Close", false).clicked() { app.actions.push(Action::CloseDialog); }
+                }
+                Dialog::ConfirmRemoveServer { id, name } => {
+                    theme::text(ui, "Remove connection?", theme::bold(20.0), palette.text);
+                    ui.add_space(8.0);
+                    ui.label(format!("Remove “{name}” and its remembered sign-in? If connected, playback and downloads will stop. Downloaded music is kept."));
+                    ui.add_space(16.0);
+                    buttons(ui, |ui| {
+                        if theme::pill_button(ui, &palette, "Remove", true).clicked() { app.actions.push(Action::ServerRemove(id.clone())); }
+                        if theme::pill_button(ui, &palette, "Cancel", false).clicked() { app.actions.push(Action::ServerConnections); }
+                    });
+                }
                 Dialog::PersonalAppIntro => {
                     theme::text(ui, gettext(locale, "Spend less time waiting for Spotify"), theme::bold(20.0), palette.text);
                     ui.add_space(12.0);

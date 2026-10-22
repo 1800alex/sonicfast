@@ -47,6 +47,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if !signed_in {
         player_bar::end_tint_session(ctx);
         login::show(app, ui, connecting);
+        if app.subsonic {
+            dialogs::show(app, ctx);
+        }
         update::show(app, ctx);
         toasts(app, ctx, 20.0);
         caption_buttons(ui, &app.palette, app.locale);

@@ -1,6 +1,73 @@
 use super::*;
 use crate::subsonic::{Event as S, QueueAction, Request};
 impl App {
+    pub(crate) fn begin_server_connection(&mut self) {
+        self.handle_auth(AuthStatus::SignedOut);
+        self.server_form.active = None;
+        self.server_form.sync_requested = false;
+        self.server_form.notice = None;
+        self.dialog = None;
+        self.track_cache.clear();
+        self.history = vec![Page::Home];
+        self.history_index = 0;
+        self.clear_picked_rows();
+        self.auth = AuthStatus::Connecting;
+    }
+    pub fn server_syncing(&self) -> bool {
+        self.server_form.sync_requested
+            || self.library.albums.loading
+            || self.library.artists.loading
+            || self.library.playlists_loading_since.is_some()
+    }
+    fn refresh_server_library(&mut self) {
+        self.server_form.sync_requested = false;
+        if !self.is_connected() {
+            return;
+        }
+        self.library.albums.reset();
+        self.library.artists.reset();
+        self.album_pages.clear();
+        self.artist_pages.clear();
+        // Preserve optimistic playlist edits and their acknowledgements.
+        self.playlist_pages
+            .retain(|_, page| page.pending_writes > 0 || page.optimistic_snapshot.is_some());
+        self.home = HomeData {
+            generation: self.home.generation,
+            top_songs_generation: self.home.top_songs_generation,
+            made_for_you_generation: self.home.made_for_you_generation,
+            new_releases_generation: self.home.new_releases_generation,
+            new_release_tracks_generation: self.home.new_release_tracks_generation,
+            ..Default::default()
+        };
+        self.saved.retain(|uri, _| self.saved_pending.contains(uri));
+        self.server_ratings
+            .retain(|uri, _| self.server_rating_pending.contains(uri));
+        self.download_checks.clear();
+        self.table_rows.clear();
+        self.load_more(Page::Albums);
+        self.load_more(Page::Artists);
+        self.load_playlists();
+        self.refresh_liked_songs();
+        let current = self.page().clone();
+        let pending_playlists: Vec<_> = self.playlist_pages.keys().cloned().collect();
+        for id in pending_playlists {
+            let page = Page::Playlist(id);
+            if page != current {
+                self.reload(page);
+            }
+        }
+        self.reload(current);
+        self.clear_picked_rows();
+        let query = self.search.committed.clone();
+        self.search.results = Loadable::NotLoaded;
+        self.search.playlists = None;
+        self.search.catalogue_pending = false;
+        self.search.playlists_pending = false;
+        if !query.is_empty() {
+            self.run_search(query);
+        }
+        self.toast("Refreshing server library…");
+    }
     pub fn song_rating(&self, track: &Track) -> u8 {
         self.server_ratings
             .get(&track.uri)
@@ -21,6 +88,14 @@ impl App {
 
     pub(super) fn subsonic_event(&mut self, event: S) {
         match event {
+            S::LibraryRefresh => self.refresh_server_library(),
+            S::ProfileRemoving { id, busy } => {
+                if busy {
+                    self.server_form.removing.insert(id);
+                } else {
+                    self.server_form.removing.remove(&id);
+                }
+            }
             S::Downloads { epoch, update } => {
                 use crate::subsonic::downloads::Update;
                 if let Update::Reset(jobs, paused) = update {
@@ -108,7 +183,21 @@ impl App {
                     .as_ref()
                     .and_then(|id| profiles.profiles.iter().find(|p| &p.id == id))
                     .cloned();
-                if let Some(profile) = selected {
+                if self.is_connected() {
+                    let changed = self.server_form.active.as_ref() != profiles.selected.as_ref();
+                    self.server_form.active = profiles.selected;
+                    if let Some(profile) = selected
+                        && (changed || !self.server_form.editing)
+                    {
+                        self.server_form.profile = profile;
+                        self.server_form.editing = false;
+                    }
+                    self.rebuild_recents();
+                } else if !self.server_form.editing
+                    && self.server_form.profile.url.is_empty()
+                    && self.server_form.secret.is_empty()
+                    && let Some(profile) = selected
+                {
                     self.server_form.profile = profile;
                 }
                 self.server_form.profiles = profiles.profiles;
@@ -284,6 +373,89 @@ impl App {
             }
             Action::ChoosePlaylistCover(_) | Action::UploadPlaylistCover(_) => {
                 self.toast("This server does not provide playlist cover uploads");
+                return None;
+            }
+            Action::CloseDialog if matches!(self.dialog, Some(Dialog::ServerConnections)) => {
+                self.server_form.secret.clear();
+                self.server_form.editing = false;
+                return Some(Action::CloseDialog);
+            }
+            Action::ServerConnections => {
+                self.server_form.editing = false;
+                self.server_form.secret.clear();
+                self.dialog = self.is_connected().then_some(Dialog::ServerConnections);
+                return None;
+            }
+            Action::ServerEdit(id) => {
+                self.server_form.profile = id
+                    .and_then(|id| {
+                        self.server_form
+                            .profiles
+                            .iter()
+                            .find(|p| p.id == id)
+                            .cloned()
+                    })
+                    .unwrap_or_default();
+                self.server_form.secret.clear();
+                self.server_form.notice = None;
+                self.server_form.editing = true;
+                self.dialog = self.is_connected().then_some(Dialog::ServerConnections);
+                return None;
+            }
+            Action::ServerUse(id) => {
+                if self.server_form.removing.contains(&id) {
+                    return None;
+                }
+                if let Some(profile) = self
+                    .server_form
+                    .profiles
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned()
+                {
+                    self.server_form.profile = profile;
+                    self.server_form.secret.clear();
+                    self.server_form.editing = true;
+                    self.server_form.notice = None;
+                    if self.server_form.profile.remember {
+                        crate::subsonic::ui::connect(self);
+                    } else {
+                        self.dialog = self.is_connected().then_some(Dialog::ServerConnections);
+                    }
+                }
+                return None;
+            }
+            Action::ServerDisconnect => {
+                self.backend.send(Command::Subsonic(Request::Disconnect));
+                self.begin_server_connection();
+                self.handle_auth(AuthStatus::SignedOut);
+                self.server_form.secret.clear();
+                self.server_form.editing = false;
+                return None;
+            }
+            Action::ServerRemove(id) => {
+                if self.server_form.removing.contains(&id) {
+                    return None;
+                }
+                if self.server_form.active.as_ref() == Some(&id) {
+                    self.begin_server_connection();
+                    self.handle_auth(AuthStatus::SignedOut);
+                }
+                if self.server_form.profile.id == id {
+                    self.server_form.profile = Default::default();
+                }
+                self.backend
+                    .send(Command::Subsonic(Request::RemoveProfile(id)));
+                self.server_form.secret.clear();
+                self.server_form.editing = false;
+                self.dialog = self.is_connected().then_some(Dialog::ServerConnections);
+                return None;
+            }
+            Action::ServerSync => {
+                if self.is_connected() && !self.server_syncing() {
+                    self.server_form.sync_requested = true;
+                    self.backend.send(Command::Subsonic(Request::Sync));
+                }
                 return None;
             }
             Action::ServerConnect => {

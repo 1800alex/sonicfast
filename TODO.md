@@ -6,9 +6,11 @@
 - [x] The top search for Playlists does not work and always returns nothing.
 - [x] The top search for Podcasts and episodes also does not work since this is not spotify
 - [x] We need to do a global replacement of spotifast with sonicfast and update the README.md to call out that we forked from spotifast. The winamp theme also says spotifast in the title bar.
-- [ ] We need to remake the demo video and screenshots
-- [ ] We need to update the github workflows and try out the actual packaging
+- [x] We need to update the github workflows and try out the actual packaging
+- [ ] We need to remake the demo video
 
-- [ ] Remove the "By You" option since I don't think it matters
-- [ ] Add "Sync" now button refresh the subsonic api backend
-- [ ] Add support for multiple subsonic servers with a connection list (only one at a time)
+- [x] We need to remake the demo screenshot and add it to the readme
+- [x] Remove the "By You" option since I don't think it matters
+- [x] Add support for multiple subsonic servers with a connection list (only one at a time)
+- [x] Add "Sync" now button refresh the subsonic api backend (if it's needed?)
+- [x] We need to then update the docs for the connection list changes

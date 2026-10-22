@@ -1107,3 +1107,144 @@ fn navidrome_downloads_local_playback_restart_and_configurable_scrobbling() {
     );
     restored.backend.shutdown();
 }
+
+#[test]
+#[ignore = "requires disposable Navidrome, private audio and unlocked credential store"]
+fn saved_connections_switch_disconnect_remove_and_sync_without_interrupting_playback() {
+    use libresonic::MusicService;
+    let dirs = dirs("connections");
+    let ctx = egui::Context::default();
+    let mut app = create(dirs.clone(), false);
+    app.attach(&ctx);
+    until(&mut app, &ctx, |a| matches!(a.auth, AuthStatus::SignedOut));
+    let url = std::env::var("LIBRESONIC_TEST_URL").expect("fixture URL");
+    app.server_form.profile = sonicfast::subsonic::profile::Profile {
+        name: "First fixture connection".into(),
+        url: url.clone(),
+        username: "admin".into(),
+        remember: true,
+        allow_http: true,
+        ..Default::default()
+    };
+    app.server_form.secret = "admin".into();
+    app.actions.push(Action::ServerConnect);
+    until(&mut app, &ctx, |a| {
+        a.is_connected() && a.library.albums.loaded_once && a.server_form.active.is_some()
+    });
+    let first = app.server_form.profile.clone();
+    assert!(first.remember);
+    let album = app.library.albums.items[0].album.id.clone();
+    app.actions.push(Action::Open(Page::Album(album.clone())));
+    until(&mut app, &ctx, |a| {
+        a.album_pages
+            .get(&album)
+            .is_some_and(|p| p.tracks.loaded_once)
+    });
+    let track = app.album_pages[&album]
+        .tracks
+        .items
+        .iter()
+        .max_by_key(|t| t.duration_ms)
+        .unwrap()
+        .clone();
+    app.actions.push(Action::PlayUris {
+        uris: vec![track.uri.clone()],
+        index: 0,
+    });
+    until(&mut app, &ctx, |a| a.local.playback == Playback::Playing);
+    // Simulate another client changing the library, then explicitly refresh it.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let service = first.client("admin").unwrap();
+    runtime.block_on(service.connect()).unwrap();
+    let name = format!("Sonicfast sync fixture {}", std::process::id());
+    let external = runtime
+        .block_on(service.create_playlist(&name, &[]))
+        .unwrap();
+    app.actions.push(Action::ServerSync);
+    until(&mut app, &ctx, |a| {
+        !a.server_syncing()
+            && a.library
+                .playlists
+                .get()
+                .is_some_and(|p| p.iter().any(|p| p.name == name))
+    });
+    assert_eq!(app.local.playback, Playback::Playing);
+    assert_eq!(app.local.track.as_ref().unwrap().uri, track.uri);
+    runtime
+        .block_on(service.delete_playlist(&external.playlist.id))
+        .unwrap();
+    app.actions.push(Action::TogglePlay);
+    until(&mut app, &ctx, |a| a.local.playback == Playback::Paused);
+    app.actions.push(Action::QueueMany {
+        songs: vec![(track.uri.clone(), track.name.clone())],
+    });
+    until(&mut app, &ctx, |a| a.manual_queue.len() == 1);
+    // A second logical connection to the disposable fixture has its own IDs and resume state.
+    app.actions.push(Action::ServerEdit(None));
+    frame(&mut app, &ctx);
+    app.server_form.profile = sonicfast::subsonic::profile::Profile {
+        name: "Second fixture connection".into(),
+        url: format!("{}/", url.trim_end_matches('/')),
+        username: "admin".into(),
+        remember: true,
+        allow_http: true,
+        ..Default::default()
+    };
+    app.server_form.secret = "admin".into();
+    app.actions.push(Action::ServerConnect);
+    until(&mut app, &ctx, |a| {
+        a.is_connected()
+            && a.server_form.profiles.len() == 2
+            && a.server_form.active.as_ref() != Some(&first.id)
+    });
+    let second = app.server_form.profile.clone();
+    assert_ne!(first.id, second.id);
+    assert!(app.local.track.is_none());
+    assert!(app.manual_queue.is_empty());
+    assert!(app.server_form.profiles.iter().all(|p| p.remember));
+    assert!(!app.track_cache.contains_key(track.id.as_ref().unwrap()));
+    app.actions.push(Action::ServerUse(first.id.clone()));
+    until(&mut app, &ctx, |a| {
+        a.is_connected()
+            && a.server_form.active.as_ref() == Some(&first.id)
+            && a.local.track.is_some()
+            && a.manual_queue.len() == 1
+    });
+    assert_eq!(app.local.playback, Playback::Paused);
+    assert_eq!(app.local.track.as_ref().unwrap().uri, track.uri);
+    // Removing an inactive connection must not disconnect the current one.
+    app.actions.push(Action::TogglePlay);
+    until(&mut app, &ctx, |a| a.local.playback == Playback::Playing);
+    app.actions.push(Action::ServerRemove(second.id.clone()));
+    until(&mut app, &ctx, |a| a.server_form.profiles.len() == 1);
+    assert_eq!(app.server_form.active.as_ref(), Some(&first.id));
+    assert!(app.is_connected());
+    assert_eq!(app.local.playback, Playback::Playing);
+    app.actions.push(Action::ServerDisconnect);
+    until(&mut app, &ctx, |a| {
+        matches!(a.auth, AuthStatus::SignedOut)
+            && a.server_form.profiles.len() == 1
+            && a.server_form.profiles[0].remember
+    });
+    // A disconnect is durable, but keeps the remembered login for an explicit reconnect.
+    app.backend.shutdown();
+    drop(app);
+    let mut app = create(dirs.clone(), true);
+    app.attach(&ctx);
+    until(&mut app, &ctx, |a| {
+        matches!(a.auth, AuthStatus::SignedOut) && a.server_form.profiles.len() == 1
+    });
+    assert!(app.server_form.active.is_none());
+    app.actions.push(Action::ServerUse(first.id.clone()));
+    until(&mut app, &ctx, |a| {
+        a.is_connected() && a.server_form.active.as_ref() == Some(&first.id)
+    });
+    app.actions.push(Action::ServerRemove(first.id));
+    until(&mut app, &ctx, |a| {
+        matches!(a.auth, AuthStatus::SignedOut) && a.server_form.profiles.is_empty()
+    });
+    assert!(app.local.track.is_none());
+    let stored = sonicfast::subsonic::profile::Profiles::load(&dirs.config.join("servers.json"));
+    assert!(stored.profiles.is_empty() && stored.selected.is_none());
+    app.backend.shutdown();
+}

@@ -94,3 +94,8 @@ consumes published Libresonic 0.1.0 and repeats Navidrome smoke, native credenti
 storage and the five native App flows. A 32-capture walkthrough additionally
 reviews the library sort menu with an old Spotify sort preference. Packaging
 and site checks in that report do not add server, physical audio or OS coverage.
+
+The [connection-list follow-up](connections-and-sync.md) exercises two saved
+logical profiles against the disposable Navidrome, isolated resume state,
+credential-preserving disconnect/reconnect and metadata refresh during playback.
+It adds no physical audio, independent-server or operating-system coverage.

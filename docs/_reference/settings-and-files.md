@@ -8,13 +8,24 @@ Open Settings using the gear button. Search filters the settings rows.
 
 | Section | Purpose |
 | --- | --- |
-| Server | Review the connected server and sign out |
+| Server | Manage connections, disconnect and Sync now |
 | Scrobbling | Enable reporting and set the percentage/time thresholds |
 | Downloads | Enable downloads, choose a folder and open the queue |
 | Playback | Choose the output device and native playback options |
 | Appearance | Themes, light/dark/system appearance and language |
 | Equalizer | Ten-band EQ, preamp and saved presets |
 | Visualizers / mini-player | Display options, MilkDrop presets and Winamp skins |
+
+## Connections and Sync
+
+Use **Manage connections** to add, edit, connect or remove servers. Each connection
+has its own server identity and resume state. **Disconnect** keeps its remembered
+sign-in; **Remove** deletes the entry and stored credential. Only one server is
+connected at a time. See [server connections]({{ '/connections/' | relative_url }}).
+
+**Sync now** reloads library metadata and the current view after changes made
+elsewhere. It leaves playback, downloads and scrobbling running and does not
+start a server-side library scan.
 
 ## Scrobbling
 
@@ -54,6 +65,7 @@ On Linux, settings normally live in `~/.config/sonicfast`, state in
 On macOS and Windows, the native platform application-data directories are used.
 Diagnostic logs include the selected locations.
 
+- `servers.json` in configuration: connection details and the last selected connection; no passwords/API keys.
 - `settings.json`: non-secret preferences.
 - `session.json`: local session and resume state.
 - `history.json`: local playback history.

@@ -11,22 +11,53 @@ use egui::{Align, CornerRadius, Frame, Layout, Margin};
 pub(super) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     let palette = app.palette;
     let mut visible = false;
-    let server = [RowText::new(
-        "Connected server",
-        format!(
-            "{}\n{}\nRemembered sign-in uses the system store. Sign out to switch servers or remove remembered sign-in.",
-            app.server_form.profile.name, app.server_form.profile.url,
+    let active = app
+        .server_form
+        .profiles
+        .iter()
+        .find(|p| Some(&p.id) == app.server_form.active.as_ref());
+    let server = [
+        RowText::new(
+            "Connected server",
+            active.map_or_else(String::new, |p| format!("{}\n{}", p.name, p.url)),
         ),
-    )];
+        RowText::new(
+            "Connections",
+            "Add, edit, switch or remove saved servers. Only one is connected at a time.",
+        ),
+        RowText::new(
+            "Refresh library",
+            "Reload artists, albums, playlists and song feedback from this server. Playback continues.",
+        ),
+    ];
     if section_matches(needle, "Server", &server) {
         visible = true;
         section(ui, &palette, "Server", |ui| {
             filtered_row(ui, &palette, needle, "Server", &server[0], |ui| {
-                if theme::soft_button(ui, &palette, None, "Sign out / switch server", false)
-                    .clicked()
-                {
-                    app.actions.push(Action::SignOut);
+                if theme::soft_button(ui, &palette, None, "Disconnect", false).clicked() {
+                    app.actions.push(Action::ServerDisconnect);
                 }
+            });
+            filtered_row(ui, &palette, needle, "Server", &server[1], |ui| {
+                if theme::soft_button(ui, &palette, None, "Manage connections", false).clicked() {
+                    app.actions.push(Action::ServerConnections);
+                }
+            });
+            filtered_row(ui, &palette, needle, "Server", &server[2], |ui| {
+                let syncing = app.server_syncing();
+                ui.add_enabled_ui(!syncing, |ui| {
+                    if theme::soft_button(
+                        ui,
+                        &palette,
+                        None,
+                        if syncing { "Syncing…" } else { "Sync now" },
+                        false,
+                    )
+                    .clicked()
+                    {
+                        app.actions.push(Action::ServerSync);
+                    }
+                });
             });
             if let Some(notice) = &app.server_form.notice {
                 theme::subtle(ui, &palette, notice);

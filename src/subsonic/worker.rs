@@ -242,6 +242,9 @@ pub async fn run(
     let mut play_fetch: Option<tokio::task::AbortHandle> = None;
     let mut pending_spec: Option<LoadSpec> = None;
     let mut tasks: JoinSet<(u64, Result<Outcome, String>)> = JoinSet::new();
+    let mut reads: JoinSet<(u64, Vec<E>)> = JoinSet::new();
+    let mut profile_jobs: JoinSet<(String, Result<(), String>)> = JoinSet::new();
+    let mut removing_profiles = std::collections::HashSet::new();
     let mut client: Option<Arc<Client>> = None;
     let mut player: Option<Player> = None;
     let mut updates: Option<tokio::sync::watch::Receiver<l::playback::PlaybackState>> = None;
@@ -291,12 +294,20 @@ pub async fn run(
                 match command {
                     b::Command::Shutdown => break,
                     b::Command::Subsonic(Request::Login(mut profile, secret)) => {
+                        if let Some(manager) = &downloads {
+                            download_queues.insert(manager.root().to_owned(), manager.pending());
+                        }
+                        if let (Some(profile), Some(p)) = (&selected, &player)
+                            && let Err(error) = save_resume(&dirs, &profile.id, &queue, &source_positions, p.snapshot().position_ms, &listening, &download_queues).await {
+                            emit(&tx, &wake, E::Error(error));
+                        }
                         generation += 1;
                         serial += 1;
                         if let Some(manager)=downloads.take() {manager.shutdown().await;}
                         *local_library.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=None;
                         reporter=None;listening=Default::default();download_pending.clear();download_fetch=None;
                         tasks.abort_all();
+                        reads = JoinSet::new();
                         playlist_writes.clear();
                         playlist_write_active = false;
                         secrets.invalidate();
@@ -312,7 +323,13 @@ pub async fn run(
                         art.set_subsonic(None);
                         queue = Queue::default();
                         source_positions.clear();
-                        if !profiles.profiles.iter().any(|p| {
+                        selected = None;
+                        dirty = false;
+                        last_end = None;
+                        last_listening = Instant::now();
+                        // A replacement API key can identify a different account even
+                        // when the optional username is unchanged.
+                        if (profile.api_key && !secret.is_empty()) || !profiles.profiles.iter().any(|p| {
                             p.id == profile.id
                                 && p.url == profile.url
                                 && p.username == profile.username
@@ -322,14 +339,14 @@ pub async fn run(
                         }
                         emit(&tx, &wake, E::Auth(b::AuthStatus::Connecting));
                         let token = generation;
+                        let revoke_secret = !profile.remember && profiles.profiles.iter().any(|p| p.id == profile.id && p.remember);
                         let secrets = secrets.clone();
-                        let path = path.clone();
-                        let mut saved = profiles.clone();
                         tasks.spawn(async move {
                             (
                                 token,
                                 async {
-                                    let secret = if secret.is_empty() && profile.remember {
+                                    let using_stored = secret.is_empty() && profile.remember;
+                                    let secret = if using_stored {
                                         secrets
                                             .access(&profile.id, None)
                                             .await?
@@ -342,14 +359,10 @@ pub async fn run(
                                     // Never enable restoration until the native write/read verification succeeds.
                                     let remember = profile.remember;
                                     profile.remember = false;
-                                    saved.profiles.retain(|p| p.id != profile.id);
-                                    saved.profiles.push(profile.clone());
-                                    saved.selected = Some(profile.id.clone());
-                                    let save_path = path.clone();
-                                    tokio::task::spawn_blocking(move || saved.save(&save_path))
-                                        .await
-                                        .map_err(|_| "Profile writer stopped")??;
-                                    let warning = if remember {
+                                    let warning = if remember && using_stored {
+                                        profile.remember = true;
+                                        None
+                                    } else if remember {
                                         match secrets.access(&profile.id, Some(Some(secret))).await {
                                             Ok(_) => {
                                                 profile.remember = true;
@@ -357,6 +370,8 @@ pub async fn run(
                                             }
                                             Err(e) => Some(e),
                                         }
+                                    } else if revoke_secret {
+                                        secrets.access(&profile.id, Some(None)).await.err()
                                     } else {
                                         None
                                     };
@@ -366,13 +381,29 @@ pub async fn run(
                             )
                         });
                     }
-                    b::Command::SignOut => {
+                    command @ (b::Command::SignOut | b::Command::Subsonic(Request::Disconnect | Request::RemoveProfile(_))) => {
+                        let remove = if let b::Command::Subsonic(Request::RemoveProfile(id)) = &command { Some(id.clone()) } else { None };
+                        if remove.as_ref().is_some_and(|id| removing_profiles.contains(id) || !profiles.profiles.iter().any(|p| &p.id == id)) { continue; }
+                        let cleanup = remove.as_ref().is_some_and(|id| profiles.profiles.iter().any(|p| &p.id == id && (p.remember || p.credential_cleanup)));
+                        let previous_profiles = profiles.clone();
+                        let disconnect = remove.as_ref().is_none_or(|id| selected.as_ref().is_some_and(|p| &p.id == id));
+                        let revoke = matches!(command, b::Command::SignOut);
+                        let mut forget = remove.clone();
+                        if disconnect {
+                        if let Some(manager) = &downloads {
+                            download_queues.insert(manager.root().to_owned(), manager.pending());
+                        }
+                        if let (Some(profile), Some(p)) = (&selected, &player)
+                            && let Err(error) = save_resume(&dirs, &profile.id, &queue, &source_positions, p.snapshot().position_ms, &listening, &download_queues).await {
+                            emit(&tx, &wake, E::Error(error));
+                        }
                         generation += 1;
                         serial += 1;
                         if let Some(manager)=downloads.take() {manager.shutdown().await;}
                         *local_library.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=None;
                         reporter=None;listening=Default::default();download_pending.clear();download_fetch=None;
                         tasks.abort_all();
+                        reads = JoinSet::new();
                         playlist_writes.clear();
                         playlist_write_active = false;
                         secrets.invalidate();
@@ -388,37 +419,56 @@ pub async fn run(
                         art.set_subsonic(None);
                         queue = Queue::default();
                         source_positions.clear();
-                        if let Some(profile) = selected.take().or_else(|| {
-                            profiles
-                                .selected
-                                .as_ref()
-                                .and_then(|id| profiles.profiles.iter().find(|p| &p.id == id))
-                                .cloned()
-                        }) {
-                            if let Some(p) = profiles.profiles.iter_mut().find(|p| p.id == profile.id) {
-                                p.remember = false;
+                            if revoke {
+                                forget = selected.as_ref().map(|p| p.id.clone()).or_else(|| profiles.selected.clone());
+                                if let Some(p) = profiles.profiles.iter_mut().find(|p| Some(&p.id) == forget.as_ref()) { p.credential_cleanup |= p.remember; p.remember = false; }
                             }
+                            selected = None;
                             profiles.selected = None;
-                            // Persist the non-secret restoration revocation before touching a possibly locked store.
-                            let saved = profiles.clone();
-                            let path = path.clone();
-                            if !matches!(
-                                tokio::task::spawn_blocking(move || saved.save(&path)).await,
-                                Ok(Ok(()))
-                            ) {
-                                emit(&tx, &wake, E::Subsonic(super::Event::Notice("Unable to persist sign-out. Unlock the credential store and retry sign-out before closing.".into())));
-                            }
+                            dirty = false;
+                            last_end = None;
+                            emit(&tx, &wake, E::Auth(b::AuthStatus::SignedOut));
+                        }
+                        if let Some(id) = &remove {
+                            if cleanup {
+                                if let Some(p) = profiles.profiles.iter_mut().find(|p| &p.id == id) { p.remember = false; p.credential_cleanup = true; }
+                            } else { profiles.profiles.retain(|p| &p.id != id); }
+                        }
+                        let saved = profiles.clone();
+                        let path = path.clone();
+                        if !matches!(tokio::task::spawn_blocking(move || saved.save(&path)).await, Ok(Ok(()))) {
+                            profiles = previous_profiles;
+                            if disconnect { profiles.selected = None; }
+                            if let Some(id) = &forget && let Some(p) = profiles.profiles.iter_mut().find(|p| &p.id == id) { p.credential_cleanup |= p.remember; p.remember = false; }
+                            emit(&tx, &wake, E::Subsonic(super::Event::Notice("Unable to save the connection change. Retry before closing the application.".into())));
+                            emit(&tx, &wake, E::Subsonic(super::Event::Profiles(profiles.clone())));
+                            continue;
+                        }
+                        if let Some(id) = remove {
+                            if cleanup {
+                            removing_profiles.insert(id.clone());
+                            emit(&tx, &wake, E::Subsonic(super::Event::ProfileRemoving { id: id.clone(), busy: true }));
                             let secrets = secrets.clone();
+                            profile_jobs.spawn(async move {
+                                let result = secrets.access(&id, Some(None)).await.map(|_| ());
+                                (id, result)
+                            });
+                            }
+                        } else if let Some(id) = forget {
+                            let secrets = secrets.clone(); let tx = tx.clone(); let wake = wake.clone();
                             tokio::spawn(async move {
-                                let _ = secrets.access(&profile.id, Some(None)).await;
+                                if secrets.access(&id, Some(None)).await.is_err() {
+                                    emit(&tx, &wake, E::Subsonic(super::Event::Notice("The connection was removed or signed out, but its secret could not be deleted. Unlock the system credential store to remove it.".into())));
+                                }
                             });
                         }
-                        emit(&tx, &wake, E::Auth(b::AuthStatus::SignedOut));
-                        emit(
-                            &tx,
-                            &wake,
-                            E::Subsonic(super::Event::Profiles(profiles.clone())),
-                        );
+                        emit(&tx, &wake, E::Subsonic(super::Event::Profiles(profiles.clone())));
+                    }
+                    b::Command::Subsonic(Request::Sync) => {
+                        // Cancel catalogue reads only. Playback, writes, scrobbles
+                        // and download jobs keep their existing generation.
+                        reads = JoinSet::new();
+                        emit(&tx, &wake, E::Subsonic(super::Event::LibraryRefresh));
                     }
                     b::Command::Subsonic(Request::Configure {scrobble,downloads:new_downloads}) => {
                         if scrobble_settings!=scrobble {
@@ -503,15 +553,17 @@ pub async fn run(
                     }
                     b::Command::Api(request) => {
                         if let Some(client) = &client {
-                            if tasks.len() >= 32 {
+                            if reads.len() >= 32 {
                                 for e in super::playlists::read_failure(request, Some(client.capabilities().server.as_str().to_owned())) { emit(&tx, &wake, e); }
                                 continue;
                             }
                             let client = client.clone();
                             let token = generation;
-                            tasks.spawn(
-                                async move { (token, Ok(Outcome::Events(read(&client, request).await))) },
-                            );
+                            if matches!(request, A::AlbumQueueTracks { .. }) {
+                                tasks.spawn(async move { (token, Ok(Outcome::Events(read(&client, request).await))) });
+                            } else {
+                                reads.spawn(async move { (token, read(&client, request).await) });
+                            }
                         }
                     }
                     b::Command::Subsonic(Request::Load(spec)) | b::Command::Player(P::Load(spec)) => {
@@ -738,6 +790,29 @@ pub async fn run(
                     _ => {}
                 }
             }
+            result = profile_jobs.join_next(), if !profile_jobs.is_empty() => {
+                if let Some(Ok((id, result))) = result {
+                    removing_profiles.remove(&id);
+                    if result.is_ok() {
+                        let previous = profiles.clone();
+                        profiles.profiles.retain(|p| p.id != id);
+                        let saved = profiles.clone(); let path = path.clone();
+                        if !matches!(tokio::task::spawn_blocking(move || saved.save(&path)).await, Ok(Ok(()))) {
+                            profiles = previous;
+                            emit(&tx, &wake, E::Subsonic(super::Event::Notice("The saved secret was deleted, but the connection list could not be saved. Retry Remove.".into())));
+                        }
+                    } else {
+                        emit(&tx, &wake, E::Subsonic(super::Event::Notice("The remembered sign-in could not be deleted. Unlock the system credential store and retry Remove.".into())));
+                    }
+                    emit(&tx, &wake, E::Subsonic(super::Event::Profiles(profiles.clone())));
+                    emit(&tx, &wake, E::Subsonic(super::Event::ProfileRemoving { id, busy: false }));
+                }
+            }
+            result = reads.join_next(), if !reads.is_empty() => {
+                if let Some(Ok((token, events))) = result && token == generation {
+                    for event in events { emit(&tx, &wake, event); }
+                }
+            }
             result = tasks.join_next(), if !tasks.is_empty() => {
                 let Some(Ok((token, outcome))) = result else {
                     continue;
@@ -757,7 +832,8 @@ pub async fn run(
                             },
                         );
                     }
-                    Ok(Outcome::Login(profile, service, warning)) => {
+                    Ok(Outcome::Login(mut profile, service, warning)) => {
+                        profile.credential_cleanup |= profile.remember || profiles.profiles.iter().any(|p| p.id == profile.id && (p.remember || p.credential_cleanup));
                         let saved_resume = read_resume(&dirs, &profile.id).await;
                         download_queues = saved_resume.as_ref().map(|resume| resume.downloads.clone()).unwrap_or_default();
                         profiles.profiles.retain(|p| p.id != profile.id);

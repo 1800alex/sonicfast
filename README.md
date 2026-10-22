@@ -6,9 +6,14 @@ by Carmine Paolino. Sonicfast keeps the original interface, native audio output,
 equalizer, visualizers and Winamp-style mini-player while using your own music
 server through [Libresonic](https://github.com/1800alex/libresonic).
 
+![Sonicfast playing a synthetic demo album with its library and queue visible](docs/assets/images/demo.png)
+
+*Native Sonicfast on Linux, using the disposable demo library.*
+
 ## Features
 
 - Browse and search artists, albums, songs and server playlists.
+- Save multiple server connections, switch between them, and refresh library metadata with Sync now.
 - Play MP3, FLAC and M4A (AAC-LC/ALAC), with pause, seek, shuffle and a local queue.
 - Create and edit server playlists, including duplicate-song confirmation.
 - Heart songs, assign 1–5 stars, and show plain or synchronized lyrics through LRCLIB.
@@ -63,7 +68,10 @@ such as `make run ARGS='--help'`. Standard Cargo environment variables still app
 
 Enter your server URL and password or API key in the native sign-in form.
 Self-hosted plaintext HTTP requires explicit opt-in. Remembered sign-in uses the
-system credential store; Sonicfast has its own configuration/state directories.
+system credential store. Manage saved connections in Settings → Server; only one
+is connected at a time. Disconnect keeps its remembered login, while Remove
+forgets the connection. Sync now reloads server metadata while playback continues.
+Sonicfast has its own configuration/state directories.
 Existing Sonicfast profiles and downloads keep their locations after the rename.
 
 In the bottom player bar, click the outlined plus to save a song to Liked Songs.

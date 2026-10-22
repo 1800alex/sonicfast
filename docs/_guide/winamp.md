@@ -1,7 +1,7 @@
 ---
 title: The Winamp Mini Player
 description: Use classic Winamp 2 skins with an analyser, equalizer, and playlist.
-nav_order: 4
+nav_order: 6
 ---
 
 Open the mini player with Ctrl+M (Cmd+Shift+M on macOS), the shrink button, or

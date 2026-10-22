@@ -14,6 +14,8 @@ and `docs/design/scrobbling-and-downloads.md`; the owner's download request exte
 the original offline-download exclusion.
 ADR 009 and `docs/design/filesystem-availability.md` supersede the persistent
 download index with filesystem checks and unfinished work in existing app state.
+ADR 010 and `docs/design/connections-and-sync.md` cover saved connections,
+credential-preserving disconnect and catalogue-only Sync.
 Run `sonicfast` for OpenSubsonic; `sonicfast-legacy` is the retained Spotify/demo comparison binary.
 This intentional OpenSubsonic fork of Spotifast supersedes inherited Spotify-only policy.
 Application/crate/packaging branding is Sonicfast. Preserve upstream attribution, real

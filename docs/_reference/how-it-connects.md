@@ -16,7 +16,9 @@ requests should be configured with its final server URL.
 
 The native sign-in form stores a non-secret profile separately from its secret.
 Remembered secrets use platform protected storage, with a Sonicfast namespace.
-Session-only sign-in keeps the secret in memory. URLs containing authentication
+Multiple connection profiles are supported, with one live server session at a time.
+Disconnect keeps remembered sign-in available; removing a profile removes its stored
+credential. Session-only sign-in keeps the secret in memory. URLs containing authentication
 material must be treated as secrets when reporting problems.
 
 Playback decodes audio on a background worker and sends PCM to Sonicfast's native

@@ -969,6 +969,9 @@ impl App {
         options: AppOptions,
         subsonic: bool,
     ) -> Self {
+        if subsonic {
+            settings.library_by_you = false;
+        }
         // The legacy password file has no endpoint of its own. Keep the old
         // settings beside it until migration binds that password in the store.
         settings.proxy_password_legacy |= dirs.proxy_secret_file().try_exists().unwrap_or(true);
@@ -2799,6 +2802,13 @@ impl App {
             }
             AuthStatus::WaitingForBrowser { url } => self.sign_in_url = Some(url.clone()),
             AuthStatus::SignedOut => {
+                if self.subsonic {
+                    self.server_form.active = None;
+                    self.server_form.sync_requested = false;
+                    self.recents = Default::default();
+                    self.recents_generation += 1;
+                    self.rebuild_recents();
+                }
                 if matches!(self.dialog, Some(Dialog::PersonalAppIntro)) {
                     self.dialog = None;
                 }
@@ -8747,7 +8757,17 @@ impl App {
 
     /// Merges local and Spotify history for the Recent tab.
     fn rebuild_recents(&mut self) {
-        self.recents_view = crate::history::merged(self.plays.plays(), &self.recents.items).into();
+        let mut plays = crate::history::merged(self.plays.plays(), &self.recents.items);
+        if self.subsonic {
+            plays.retain(|play| {
+                crate::subsonic::adapter::id(&play.track.uri)
+                    .ok()
+                    .is_some_and(|id| {
+                        self.server_form.active.as_deref() == Some(id.server().as_str())
+                    })
+            });
+        }
+        self.recents_view = plays.into();
     }
 
     /// Adds a page of play history to the Recents tab.
@@ -10671,6 +10691,12 @@ impl App {
         }
         match action {
             Action::ServerConnect => crate::subsonic::ui::connect(self),
+            Action::ServerConnections
+            | Action::ServerEdit(_)
+            | Action::ServerUse(_)
+            | Action::ServerDisconnect
+            | Action::ServerRemove(_)
+            | Action::ServerSync => {}
             Action::Open(page) => self.open(page),
             Action::OpenSongRadio { uri, track } => self.open_song_radio(&uri, &track),
             Action::PrepareTint(url) => {
@@ -13415,6 +13441,101 @@ mod tests {
         assert!(
             crate::http::build_client(&app.applied_proxy).is_ok(),
             "Preset downloads must have a usable network configuration at startup"
+        );
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn startup_profiles_do_not_overwrite_a_connection_draft() {
+        let mut app = test_app("server-profile-startup-draft");
+        app.subsonic = true;
+        app.auth = AuthStatus::SignedOut;
+        app.server_form.profile.url = "https://new.example.invalid".into();
+        app.server_form.profile.username = "new-user".into();
+        app.server_form.secret = "draft-fixture".into();
+        app.subsonic_event(crate::subsonic::Event::Profiles(Default::default()));
+        let previous = crate::subsonic::profile::Profile {
+            id: "old".into(),
+            url: "https://old.example.invalid".into(),
+            ..Default::default()
+        };
+        app.subsonic_event(crate::subsonic::Event::Profiles(
+            crate::subsonic::profile::Profiles {
+                selected: Some(previous.id.clone()),
+                profiles: vec![previous],
+            },
+        ));
+        assert_eq!(app.server_form.profile.url, "https://new.example.invalid");
+        assert_eq!(app.server_form.profile.username, "new-user");
+        assert_eq!(app.server_form.secret, "draft-fixture");
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn adding_connection_keeps_playback_until_connect_then_clears_server_views() {
+        let mut app = test_app("server-switch-isolation");
+        app.subsonic = true;
+        app.backend.set_offline(true);
+        app.auth = AuthStatus::Connected {
+            username: "a".into(),
+        };
+        app.server_form.active = Some("server-a".into());
+        app.local.playback = Playback::Playing;
+        app.track_cache.insert("old".into(), Track::default());
+        app.history = vec![Page::Album("old-album".into())];
+        let ctx = egui::Context::default();
+        app.apply(Action::ServerEdit(None), &ctx);
+        assert_eq!(app.local.playback, Playback::Playing);
+        assert_eq!(app.server_form.active.as_deref(), Some("server-a"));
+        app.server_form.secret = "cancelled-fixture".into();
+        app.apply(Action::CloseDialog, &ctx);
+        assert!(app.server_form.secret.is_empty());
+        assert_eq!(app.local.playback, Playback::Playing);
+        app.apply(Action::ServerEdit(None), &ctx);
+        app.server_form.profile.url = "https://example.invalid".into();
+        app.server_form.secret = "fixture-only".into();
+        app.apply(Action::ServerConnect, &ctx);
+        assert!(matches!(app.auth, AuthStatus::Connecting));
+        assert!(app.local.track.is_none());
+        assert!(app.track_cache.is_empty());
+        assert_eq!(app.history, [Page::Home]);
+        assert!(app.server_form.active.is_none());
+        assert!(app.server_form.secret.is_empty());
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn library_sync_keeps_playback_queue_and_pending_feedback() {
+        let mut app = test_app("server-sync-preserves-playback");
+        app.subsonic = true;
+        app.backend.set_offline(true);
+        app.auth = AuthStatus::Connected {
+            username: "a".into(),
+        };
+        app.local.playback = Playback::Playing;
+        app.local.position_ms = 1234;
+        app.manual_queue = vec!["queued-song".into()];
+        app.saved.insert("stale".into(), true);
+        app.saved.insert("pending".into(), true);
+        app.saved_pending.insert("pending".into());
+        app.server_form.sync_requested = true;
+        app.search.committed = "earlier search".into();
+        let page = app.page().clone();
+        app.subsonic_event(crate::subsonic::Event::LibraryRefresh);
+        assert_eq!(app.local.playback, Playback::Playing);
+        assert_eq!(app.local.position_ms, 1234);
+        assert_eq!(app.manual_queue, ["queued-song"]);
+        assert_eq!(app.saved.get("pending"), Some(&true));
+        assert!(!app.saved.contains_key("stale"));
+        assert!(!app.server_form.sync_requested);
+        assert!(app.library.albums.loading && app.library.artists.loading);
+        assert!(app.server_syncing());
+        assert_eq!(app.page(), &page);
+        assert!(app.search.catalogue_pending);
+        assert!(
+            !app.actions
+                .iter()
+                .any(|action| matches!(action, Action::Search(_)))
         );
         app.backend.shutdown();
     }

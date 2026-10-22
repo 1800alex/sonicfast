@@ -8,7 +8,8 @@ nav_order: 3
 
 ## Connect to your server
 
-Enter a profile name, server URL and username in the sign-in form. Choose password
+Choose **Add connection** if you already have saved servers. Enter a connection
+name, server URL and username in the sign-in form. Choose password
 or API-key authentication to match your server and enter the secret. API keys
 require server support. Use the URL you normally use to reach your music server,
 including any deployment subpath.
@@ -18,6 +19,12 @@ allow insecure HTTP in the form. Sonicfast validates HTTPS certificates.
 **Remember** stores the secret in your operating system's protected credential
 store. An unlocked credential store is required for remembered login; without it,
 use a session-only connection. Server credentials are separate from legacy profiles.
+
+Saved servers appear in the connection list. Open **Settings → Server → Manage
+connections** to add or switch servers while connected. Only one server is active;
+switching stops playback and preserves each connection's own queue. **Disconnect**
+keeps remembered credentials; **Remove** forgets the connection after confirmation.
+See [server connections]({{ '/connections/' | relative_url }}) for details.
 
 ## Play music
 

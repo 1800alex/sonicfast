@@ -16,6 +16,9 @@ use crate::{
 
 pub enum Request {
     Login(profile::Profile, String),
+    Disconnect,
+    RemoveProfile(String),
+    Sync,
     Configure {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: downloads::Settings,
@@ -53,6 +56,11 @@ pub enum QueueAction {
     Skip(usize),
 }
 pub enum Event {
+    LibraryRefresh,
+    ProfileRemoving {
+        id: String,
+        busy: bool,
+    },
     Profiles(profile::Profiles),
     Downloads {
         epoch: u64,

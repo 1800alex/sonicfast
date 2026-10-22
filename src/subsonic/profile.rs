@@ -23,6 +23,9 @@ pub struct Profile {
     pub api_key: bool,
     pub allow_http: bool,
     pub remember: bool,
+    /// The store may contain a credential even after sign-out or a failed cleanup.
+    #[serde(default)]
+    pub credential_cleanup: bool,
 }
 impl Profile {
     pub fn client(&self, secret: &str) -> Result<Client, libresonic::Error> {
@@ -83,6 +86,34 @@ pub struct Form {
     pub secret: String,
     pub profiles: Vec<Profile>,
     pub notice: Option<String>,
+    pub active: Option<String>,
+    pub editing: bool,
+    pub sync_requested: bool,
+    pub removing: std::collections::HashSet<String>,
+}
+
+fn write_secret(
+    store: &mut dyn ProtectedStore,
+    key: &str,
+    secret: &[u8],
+    current: &AtomicU64,
+    generation: u64,
+) -> Result<(), crate::credentials::Error> {
+    let previous = store.read(key)?;
+    store.write(key, secret)?;
+    if store.read(key)?.as_deref() != Some(secret) {
+        return Err(crate::credentials::Error::Verification);
+    }
+    if current.load(Ordering::SeqCst) != generation {
+        // Cancelling a credential edit must preserve the previous saved login.
+        if let Some(previous) = previous {
+            store.write(key, &previous)?;
+        } else {
+            store.delete(key)?;
+        }
+        return Err(crate::credentials::Error::Stale);
+    }
+    Ok(())
 }
 
 // Native calls stay on one dedicated bounded worker, even if the desktop store locks.
@@ -127,19 +158,14 @@ impl Secrets {
         self.jobs
             .try_send(Box::new(move |store| {
                 let result = (|| {
-                    if current.load(Ordering::SeqCst) != generation {
+                    if current.load(Ordering::SeqCst) != generation
+                        && !matches!(write.as_ref(), Some(None))
+                    {
                         return Err(crate::credentials::Error::Stale);
                     }
                     match write {
                         Some(Some(secret)) => {
-                            store.write(&key, secret.as_bytes())?;
-                            if store.read(&key)?.as_deref() != Some(secret.as_bytes()) {
-                                return Err(crate::credentials::Error::Verification);
-                            }
-                            if current.load(Ordering::SeqCst) != generation {
-                                let _ = store.delete(&key);
-                                return Err(crate::credentials::Error::Stale);
-                            }
+                            write_secret(store, &key, secret.as_bytes(), &current, generation)?;
                             Ok(None)
                         }
                         Some(None) => {
@@ -171,6 +197,45 @@ impl Secrets {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_native_write_restores_the_previous_login() {
+        struct Store {
+            value: Option<Vec<u8>>,
+            generation: Arc<AtomicU64>,
+            writes: usize,
+        }
+        impl ProtectedStore for Store {
+            fn read(&mut self, _: &str) -> Result<Option<Vec<u8>>, crate::credentials::Error> {
+                Ok(self.value.clone())
+            }
+            fn write(&mut self, _: &str, secret: &[u8]) -> Result<(), crate::credentials::Error> {
+                self.value = Some(secret.to_vec());
+                self.writes += 1;
+                if self.writes == 1 {
+                    self.generation.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            }
+            fn delete(&mut self, _: &str) -> Result<(), crate::credentials::Error> {
+                self.value = None;
+                Ok(())
+            }
+        }
+        for previous in [Some(b"previous-fixture".to_vec()), None] {
+            let generation = Arc::new(AtomicU64::new(0));
+            let mut store = Store {
+                value: previous.clone(),
+                generation: generation.clone(),
+                writes: 0,
+            };
+            assert!(matches!(
+                write_secret(&mut store, "server-a", b"new-fixture", &generation, 0),
+                Err(crate::credentials::Error::Stale)
+            ));
+            assert_eq!(store.value, previous);
+        }
+    }
+
     #[tokio::test]
     #[ignore = "requires an unlocked native system credential store; use the isolated Phase 3 runner"]
     async fn native_server_secret_round_trip_and_revocation() {

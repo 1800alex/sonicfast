@@ -1,7 +1,7 @@
 ---
 title: MilkDrop
 description: Run the MilkDrop visualiser, install presets, and use its controls.
-nav_order: 5
+nav_order: 7
 ---
 
 MilkDrop shows colourful animations that react to your music. Open it from

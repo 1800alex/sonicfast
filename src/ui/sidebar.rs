@@ -734,11 +734,12 @@ fn playlist_rows(app: &App, sort: LibrarySort, needle: &str, entries: &mut Vec<E
             .any(|row| matches!(row, crate::player::RootlistEntry::FolderStart { .. })),
         _ => false,
     };
-    if folders && needle.is_empty() && !app.settings.library_by_you {
+    let by_you = !app.subsonic && app.settings.library_by_you;
+    if folders && needle.is_empty() && !by_you {
         folder_rows(app, user_id.unwrap_or(""), entries);
     } else if let Some(playlists) = app.library.playlists.get() {
         for (index, playlist) in playlists.iter().enumerate() {
-            if app.settings.library_by_you && !user_id.is_some_and(|id| playlist.owned_by(id)) {
+            if by_you && !user_id.is_some_and(|id| playlist.owned_by(id)) {
                 continue;
             }
             if !needle.is_empty() && !playlist.name.to_lowercase().contains(needle) {
@@ -1115,7 +1116,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
         sort_menu(app, ui, filter, sort);
-        if filter == Filter::Playlists {
+        if !app.subsonic && filter == Filter::Playlists {
             // Translators: Library filter for playlists created by the signed-in user.
             let label = gettext(locale, "By You");
             let by_you = app.settings.library_by_you;
@@ -2888,6 +2889,17 @@ mod ordering_tests {
         let restored: Settings =
             serde_json::from_str(&serde_json::to_string(&app.settings).unwrap()).unwrap();
         assert_eq!(restored, app.settings);
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn subsonic_ignores_a_stored_by_you_filter() {
+        let mut app = ownership_app("subsonic-no-owner-filter");
+        app.subsonic = true;
+        let before = projected(&app, "").len();
+        app.settings.library_by_you = true;
+        assert_eq!(projected(&app, "").len(), before);
+        assert!(projected(&app, "").iter().any(|entry| entry.name == "Beta"));
         app.backend.shutdown();
     }
 

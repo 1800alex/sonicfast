@@ -242,6 +242,43 @@ impl Walkthrough {
             }
             "library-sort-menu" => {
                 egui::Popup::close_all(self.ctx.as_ref().unwrap());
+                self.app
+                    .actions
+                    .push(Action::SetTheme(sonicfast::settings::ThemeChoice::Dark));
+                self.app.search.query.clear();
+                let track = self.app.album_pages[&self.album]
+                    .tracks
+                    .items
+                    .iter()
+                    .rev()
+                    .max_by_key(|t| t.duration_ms)
+                    .unwrap();
+                self.track = track.uri.clone();
+                self.app.actions.push(Action::ClearQueue);
+                self.app.actions.push(Action::PlayContext {
+                    uri: format!("sonicfast:album:{}", self.album),
+                    offset_uri: Some(self.track.clone()),
+                    offset_index: None,
+                });
+                self.app
+                    .actions
+                    .push(Action::Open(Page::Album(self.album.clone())));
+                self.app.show_queue_panel = true;
+            }
+            "readme-demo" => self.app.actions.push(Action::ServerConnections),
+            "connections" => self.app.actions.push(Action::ServerEdit(None)),
+            "connection-add" => {
+                self.app
+                    .actions
+                    .push(Action::SetTheme(sonicfast::settings::ThemeChoice::Light));
+                self.ctx
+                    .as_ref()
+                    .unwrap()
+                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(680.0, 850.0)));
+            }
+            "connection-add-light" => {
+                self.app.actions.push(Action::CloseDialog);
+                self.app.server_form.profile = self.app.server_form.profiles[0].clone();
                 self.app.actions.push(Action::SignOut);
                 self.app.server_form.secret = "wrong-password-fixture-only".into();
             }
@@ -409,13 +446,30 @@ impl eframe::App for Walkthrough {
                 28 => Some("settings-downloads-narrow"),
                 29 => Some("library-light"),
                 30 if egui::Popup::is_any_open(&ctx) => Some("library-sort-menu"),
-                31 if matches!(self.app.auth, AuthStatus::SignedOut) => {
+                31 if self.app.palette.dark
+                    && self.app.local.playback == Playback::Playing
+                    && self
+                        .app
+                        .local
+                        .track
+                        .as_ref()
+                        .is_some_and(|t| t.uri == self.track)
+                    && self.app.manual_queue.is_empty() =>
+                {
+                    Some("readme-demo")
+                }
+                32 if matches!(self.app.dialog, Some(Dialog::ServerConnections)) => {
+                    Some("connections")
+                }
+                33 if self.app.server_form.editing => Some("connection-add"),
+                34 if !self.app.palette.dark => Some("connection-add-light"),
+                35 if matches!(self.app.auth, AuthStatus::SignedOut) => {
                     self.app.server_form.secret = "wrong-password-fixture-only".into();
                     self.app.actions.push(Action::ServerConnect);
                     None
                 }
-                31 if matches!(self.app.auth, AuthStatus::Failed(_)) => Some("auth-error"),
-                32 => {
+                35 if matches!(self.app.auth, AuthStatus::Failed(_)) => Some("auth-error"),
+                36 => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     None
                 }

@@ -1,137 +1,250 @@
-//! Server profile form using the existing native palette and action flow.
+//! Server connections and profile form using the existing native palette.
 use super::Request;
 use crate::{
     app::App,
     backend::{AuthStatus, Command},
-    model::Action,
+    model::{Action, Dialog},
     theme,
 };
+
+fn busy(app: &App) -> bool {
+    matches!(app.auth, AuthStatus::Connecting | AuthStatus::Starting)
+}
+
+fn form_switch(ui: &mut egui::Ui, palette: &crate::theme::Palette, label: &str, on: &mut bool) {
+    ui.horizontal(|ui| {
+        crate::ui::widgets::switch(ui, palette, label, on);
+        ui.add(egui::Label::new(label).wrap());
+    });
+}
 
 pub fn login(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(palette.window))
         .show(ui, |ui| {
-            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.add_space(60.0);
-                theme::text(ui, "Sonicfast", theme::bold(34.0), palette.text);
-                theme::text(
-                    ui,
-                    "Connect to your OpenSubsonic music server",
-                    theme::regular(15.0),
-                    palette.secondary,
-                );
-                ui.add_space(24.0);
-                ui.scope_builder(
-                    egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                        egui::pos2(ui.max_rect().center().x - 200.0, ui.cursor().min.y),
-                        egui::vec2(400.0, ui.available_height()),
-                    )),
-                    |ui| {
-                        let form = &mut app.server_form;
-                        if !form.profiles.is_empty() {
-                            let mut choice = form.profile.id.clone();
-                            egui::ComboBox::from_id_salt("server-profile")
-                                .selected_text(if form.profile.name.is_empty() {
-                                    "Choose a saved server"
-                                } else {
-                                    &form.profile.name
-                                })
-                                .show_ui(ui, |ui| {
-                                    for profile in &form.profiles {
-                                        ui.selectable_value(
-                                            &mut choice,
-                                            profile.id.clone(),
-                                            &profile.name,
-                                        );
-                                    }
-                                    ui.selectable_value(
-                                        &mut choice,
-                                        String::new(),
-                                        "Add a server…",
-                                    );
-                                });
-                            if choice != form.profile.id {
-                                form.profile = form
-                                    .profiles
-                                    .iter()
-                                    .find(|p| p.id == choice)
-                                    .cloned()
-                                    .unwrap_or_default();
-                                form.secret.clear();
-                                form.notice = None;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.add_space(48.0);
+                    theme::text(ui, "Sonicfast", theme::bold(34.0), palette.text);
+                    theme::subtle(ui, &palette, "Connect to your OpenSubsonic music server");
+                    ui.add_space(24.0);
+                    let width = ui.available_width().min(440.0);
+                    ui.scope_builder(
+                        egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                            egui::pos2(ui.max_rect().center().x - width / 2.0, ui.cursor().min.y),
+                            egui::vec2(width, ui.available_height()),
+                        )),
+                        |ui| {
+                            if app.server_form.editing || app.server_form.profiles.is_empty() {
+                                connection_form(app, ui);
+                            } else {
+                                connections(app, ui);
                             }
-                        }
-                        for (label, field) in [
-                            ("Profile name", &mut form.profile.name),
-                            ("Server URL", &mut form.profile.url),
-                            ("Username", &mut form.profile.username),
-                        ] {
-                            ui.label(label);
-                            ui.add(egui::TextEdit::singleline(field).desired_width(f32::INFINITY));
-                        }
-                        ui.checkbox(&mut form.profile.api_key, "Use an API key");
-                        ui.label(if form.profile.api_key {
-                            "API key"
-                        } else {
-                            "Password"
-                        });
-                        let entered = ui.add(
-                            egui::TextEdit::singleline(&mut form.secret)
-                                .password(true)
-                                .desired_width(f32::INFINITY),
-                        );
-                        ui.checkbox(
-                            &mut form.profile.allow_http,
-                            "Allow plaintext HTTP for this trusted server",
-                        );
-                        ui.checkbox(
-                            &mut form.profile.remember,
-                            "Remember sign-in in the system credential store",
-                        );
-                        if let Some(notice) = &form.notice {
-                            ui.colored_label(palette.secondary, notice);
-                        }
-                        match &app.auth {
-                            AuthStatus::Connecting | AuthStatus::Starting => {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label("Connecting…");
-                                });
-                            }
-                            AuthStatus::Failed(error) => {
-                                ui.colored_label(palette.danger, error);
-                            }
-                            _ => {}
-                        }
-                        let busy =
-                            matches!(app.auth, AuthStatus::Connecting | AuthStatus::Starting);
-                        if ui
-                            .add_enabled(
-                                !busy && (!form.secret.is_empty() || form.profile.remember),
-                                egui::Button::new("Connect"),
-                            )
-                            .clicked()
-                            || (!busy
-                                && entered.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                && !form.secret.is_empty())
-                        {
-                            app.actions.push(Action::ServerConnect);
-                        }
-                        if busy && ui.button("Cancel").clicked() {
-                            app.actions.push(Action::SignOut);
-                        }
-                    },
-                );
+                        },
+                    );
+                });
             });
         });
 }
 
+/// Shared by the signed-out connection list and the Settings modal.
+pub fn connections(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let busy = busy(app);
+    theme::text(ui, "Connections", theme::bold(20.0), palette.text);
+    theme::subtle(
+        ui,
+        &palette,
+        "One server is connected at a time. Switching stops playback.",
+    );
+    ui.add_space(12.0);
+    egui::ScrollArea::vertical()
+        .max_height(320.0)
+        .show(ui, |ui| {
+            for profile in &app.server_form.profiles {
+                let active = app.server_form.active.as_deref() == Some(&profile.id);
+                egui::Frame::new()
+                    .fill(palette.surface)
+                    .corner_radius(8)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_width((ui.available_width()).max(0.0));
+                        ui.horizontal_wrapped(|ui| {
+                            theme::text(ui, &profile.name, theme::medium(15.0), palette.text);
+                            if active {
+                                theme::text(ui, "Connected", theme::regular(12.0), palette.accent);
+                            }
+                        });
+                        theme::subtle(ui, &palette, &profile.url);
+                        if !profile.username.is_empty() {
+                            theme::subtle(ui, &palette, &profile.username);
+                        }
+                        ui.add_space(6.0);
+                        let removing = app.server_form.removing.contains(&profile.id);
+                        if removing {
+                            theme::subtle(ui, &palette, "Removing…");
+                        }
+                        ui.add_enabled_ui(!busy && !removing, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let label = if active {
+                                    "Disconnect"
+                                } else if profile.remember {
+                                    "Connect"
+                                } else {
+                                    "Sign in"
+                                };
+                                if theme::soft_button(ui, &palette, None, label, false).clicked() {
+                                    app.actions.push(if active {
+                                        Action::ServerDisconnect
+                                    } else {
+                                        Action::ServerUse(profile.id.clone())
+                                    });
+                                }
+                                if theme::soft_button(ui, &palette, None, "Edit", false).clicked() {
+                                    app.actions
+                                        .push(Action::ServerEdit(Some(profile.id.clone())));
+                                }
+                                if theme::soft_button(ui, &palette, None, "Remove", false).clicked()
+                                {
+                                    app.actions.push(Action::ShowDialog(
+                                        Dialog::ConfirmRemoveServer {
+                                            id: profile.id.clone(),
+                                            name: profile.name.clone(),
+                                        },
+                                    ));
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(8.0);
+            }
+        });
+    ui.add_enabled_ui(!busy, |ui| {
+        if theme::soft_button(ui, &palette, None, "Add connection", false).clicked() {
+            app.actions.push(Action::ServerEdit(None));
+        }
+    });
+    connection_status(app, ui);
+}
+
+pub fn connection_form(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let busy = busy(app);
+    let form = &mut app.server_form;
+    let mut submit = false;
+    theme::text(
+        ui,
+        if form.profile.id.is_empty() {
+            "Add connection"
+        } else {
+            "Edit connection"
+        },
+        theme::bold(20.0),
+        palette.text,
+    );
+    ui.add_space(12.0);
+    ui.add_enabled_ui(!busy, |ui| {
+        for (label, field) in [
+            ("Connection name", &mut form.profile.name),
+            ("Server URL", &mut form.profile.url),
+            ("Username", &mut form.profile.username),
+        ] {
+            ui.label(label);
+            crate::ui::widgets::text_edit(
+                ui,
+                app.locale,
+                egui::TextEdit::singleline(field).desired_width(f32::INFINITY),
+            );
+        }
+        form_switch(ui, &palette, "Use an API key", &mut form.profile.api_key);
+        ui.label(if form.profile.api_key {
+            "API key"
+        } else {
+            "Password"
+        });
+        let entered = crate::ui::widgets::text_edit(
+            ui,
+            app.locale,
+            egui::TextEdit::singleline(&mut form.secret)
+                .password(true)
+                .desired_width(f32::INFINITY),
+        );
+        submit = entered.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if form.profile.remember && !form.profile.id.is_empty() {
+            theme::subtle(
+                ui,
+                &palette,
+                "Leave the secret empty to use the remembered sign-in.",
+            );
+        }
+        form_switch(
+            ui,
+            &palette,
+            "Allow plaintext HTTP for this trusted server",
+            &mut form.profile.allow_http,
+        );
+        form_switch(
+            ui,
+            &palette,
+            "Remember sign-in in the system credential store",
+            &mut form.profile.remember,
+        );
+    });
+    ui.add_space(12.0);
+    ui.horizontal_wrapped(|ui| {
+        let valid = !form.profile.url.trim().is_empty()
+            && (!form.secret.is_empty() || form.profile.remember);
+        ui.add_enabled_ui(!busy && valid, |ui| {
+            if theme::pill_button(ui, &palette, "Connect", true).clicked() {
+                app.actions.push(Action::ServerConnect);
+            }
+        });
+        if busy {
+            if theme::soft_button(ui, &palette, None, "Cancel", false).clicked() {
+                app.actions.push(Action::ServerDisconnect);
+            }
+        } else if !form.profiles.is_empty()
+            && theme::soft_button(ui, &palette, None, "Back to connections", false).clicked()
+        {
+            app.actions.push(Action::ServerConnections);
+        }
+    });
+    if submit && !busy && (!app.server_form.secret.is_empty() || app.server_form.profile.remember) {
+        app.actions.push(Action::ServerConnect);
+    }
+    connection_status(app, ui);
+}
+fn connection_status(app: &App, ui: &mut egui::Ui) {
+    if let Some(notice) = &app.server_form.notice {
+        theme::subtle(ui, &app.palette, notice);
+    }
+    match &app.auth {
+        AuthStatus::Connecting | AuthStatus::Starting => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Connecting…");
+            });
+        }
+        AuthStatus::Failed(error) => {
+            ui.colored_label(app.palette.danger, error);
+        }
+        _ => {}
+    }
+}
+
 pub fn connect(app: &mut App) {
-    let profile = app.server_form.profile.clone();
+    let mut profile = app.server_form.profile.clone();
+    profile.url = profile.url.trim().to_owned();
+    if profile.name.trim().is_empty() {
+        profile.name = reqwest::Url::parse(&profile.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "Music server".into());
+    }
     let secret = std::mem::take(&mut app.server_form.secret);
-    app.server_form.notice = None;
+    app.begin_server_connection();
+    app.server_form.editing = true;
     app.backend
         .send(Command::Subsonic(Request::Login(profile, secret)));
 }

@@ -20,7 +20,9 @@ The server and external services have their own data-retention policies.
 
 Configuration, session state, history, caches and logs are stored locally. Download
 availability comes from filesystem checks, with no persistent download index.
-Signing out does not delete your downloaded music. The default application's
+Disconnect preserves saved sign-in; Remove deletes the selected connection and its
+remembered secret. Connection details in `servers.json` contain no password/API key.
+Neither operation deletes downloaded music. The default application's
 self-updater is disabled; install releases manually.
 
 HTTPS certificates are validated. HTTP servers require an explicit insecure-HTTP

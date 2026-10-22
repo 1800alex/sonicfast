@@ -1,7 +1,7 @@
 ---
 title: Using Sonicfast
 description: Playback, playlists, hearts, ratings, lyrics and downloads.
-nav_order: 4
+nav_order: 5
 ---
 
 ## Browse and search
