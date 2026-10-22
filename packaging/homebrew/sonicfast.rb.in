@@ -1,0 +1,21 @@
+cask "sonicfast" do
+  version "@VERSION@"
+  sha256 "@MACOS_SHA256@"
+
+  url "https://github.com/1800alex/sonicfast/releases/download/v#{version}/sonicfast-v#{version}-macos-universal.dmg"
+  name "Sonicfast"
+  desc "Native OpenSubsonic music client"
+  homepage "https://1800alex.github.io/sonicfast/"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  app "Sonicfast.app"
+
+  zap trash: [
+    "~/Library/Application Support/org.sonicfast.sonicfast",
+    "~/Library/Caches/org.sonicfast.sonicfast",
+  ]
+end

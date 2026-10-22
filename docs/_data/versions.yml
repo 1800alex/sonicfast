@@ -1,0 +1,5 @@
+current: Development
+items:
+  - title: Releases
+    url: https://github.com/1800alex/sonicfast/releases
+    external: true

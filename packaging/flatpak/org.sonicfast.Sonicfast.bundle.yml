@@ -1,0 +1,37 @@
+# The release workflow's Flatpak: the binary the Linux job built, packaged
+# into the same sandbox as org.sonicfast.Sonicfast.yml describes. The
+# job unpacks the release tarball into built/ beside this file first.
+id: org.sonicfast.Sonicfast
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: sonicfast
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  - --socket=pulseaudio
+  - --share=network
+  # Platform storage for this application's remembered server secrets.
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.mpris.MediaPlayer2.sonicfast
+  - --persist=.local/state
+modules:
+  - name: sonicfast
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 sonicfast /app/bin/sonicfast
+      - install -Dm644 packaging/applications/*.desktop /app/share/applications/org.sonicfast.Sonicfast.desktop
+      - sed -i 's/^Icon=.*$/Icon=org.sonicfast.Sonicfast/;s/^StartupWMClass=sonicfast$/StartupWMClass=org.sonicfast.Sonicfast/' /app/share/applications/org.sonicfast.Sonicfast.desktop
+      - install -Dm644 packaging/icons/*.svg /app/share/icons/hicolor/scalable/apps/org.sonicfast.Sonicfast.svg
+      - install -Dm644 packaging/flatpak/org.sonicfast.Sonicfast.metainfo.xml /app/share/metainfo/org.sonicfast.Sonicfast.metainfo.xml
+      - install -Dm644 LICENSE /app/share/licenses/sonicfast/LICENSE
+    sources:
+      - type: dir
+        path: built
+      # Metainfo belongs to this packaging checkout, not the portable archive.
+      - type: file
+        path: org.sonicfast.Sonicfast.metainfo.xml
+        dest: packaging/flatpak

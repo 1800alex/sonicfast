@@ -1,0 +1,84 @@
+title: Sonicfast
+sonicfast_version: "0.14.1"
+description: A native desktop music client for OpenSubsonic and compatible Subsonic servers.
+lang: en-US
+timezone: UTC
+url: https://1800alex.github.io
+baseurl: /sonicfast
+logo: /assets/images/logo.svg
+markdown: kramdown
+kramdown:
+  input: GFM
+permalink: pretty
+theme: jekyll-vitepress-theme
+collections:
+  guide:
+    output: true
+    permalink: "/:name/"
+  reference:
+    output: true
+    permalink: "/:name/"
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+      topics: [OpenSubsonic, Subsonic, Rust, egui, Libresonic, music player]
+jekyll_vitepress:
+  seo:
+    page_type: TechArticle
+    publisher:
+      type: Organization
+      name: Sonicfast contributors
+      url: https://github.com/1800alex/sonicfast
+  llms:
+    title: Sonicfast
+    description: Native OpenSubsonic desktop client documentation.
+    full: true
+    details: >-
+      Installation, server sign-in, playback, playlists, lyrics, ratings,
+      scrobbling and local downloads. Source is on
+      [GitHub](https://github.com/1800alex/sonicfast).
+  branding:
+    site_title: Sonicfast
+    logo:
+      default: /assets/images/logo.svg
+      alt: Sonicfast
+  syntax:
+    light_theme: github
+    dark_theme: github.dark
+  footer:
+    enabled: true
+    show_on_docs: true
+    message: >-
+      Sonicfast is a fork of
+      <a href="https://github.com/crmne/spotifast">Spotifast</a>
+      by Carmine Paolino and its contributors.
+    copyright: MIT license. Documentation built with Jekyll VitePress.
+  doc_footer:
+    enabled: true
+    previous_label: Previous page
+    next_label: Next page
+  edit_link:
+    enabled: true
+    pattern: "https://github.com/1800alex/sonicfast/edit/main/docs/:path"
+    text: Edit this page on GitHub
+  github_star:
+    enabled: true
+    repository: 1800alex/sonicfast
+    text: Star
+    show_count: false
+  github_sponsor:
+    enabled: false
+plugins:
+  - jekyll-redirect-from
+  - jekyll-vitepress-theme
+exclude:
+  - design
+  - _site
+  - .jekyll-cache
+  - .sass-cache
+  - .bundle
+  - vendor
+  - Gemfile
+  - Gemfile.lock

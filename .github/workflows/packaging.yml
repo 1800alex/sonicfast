@@ -1,0 +1,103 @@
+name: Packaging
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml, Cargo.lock, native-packages.yaml, packaging/**, contrib/omarchy/**, .github/scripts/install-nfpm.sh, .github/workflows/packaging.yml]
+  pull_request:
+    paths: [Cargo.toml, Cargo.lock, native-packages.yaml, packaging/**, contrib/omarchy/**, .github/scripts/install-nfpm.sh, .github/workflows/packaging.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build packages (${{ matrix.id }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            id: linux-amd64
+            target: x86_64-unknown-linux-gnu
+            appimage: appimage-amd64
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            id: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            appimage: appimage-arm64
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+      - name: Native build and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config cmake clang libclang-dev \
+            libasound2-dev libpipewire-0.3-dev libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libarchive-tools squashfs-tools zsync
+          gem install native-packages --version 0.10.0 --no-document
+      - name: Install nFPM
+        run: bash .github/scripts/install-nfpm.sh
+      - name: Build current Sonicfast source
+        run: cargo build --locked --release --bin sonicfast --target "${{ matrix.target }}"
+      - name: Package the current build
+        run: |
+          version=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          name="sonicfast-v$version-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/sonicfast" README.md LICENSE "dist/$name/"
+          cp --parents packaging/applications/sonicfast.desktop packaging/icons/sonicfast.svg "dist/$name/"
+          cp --parents contrib/omarchy/sonicfast.json.tpl contrib/omarchy/sonicfast-theme "dist/$name/"
+          tar czf "dist/$name.tar.gz" -C dist "$name"
+          native-packages build --version "$version" --target "${{ matrix.id }}" --target "${{ matrix.appimage }}" --defer-recipes --output dist/native-packages
+      - name: Validate and start the AppImage
+        run: |
+          set -- dist/native-packages/packages/"${{ matrix.appimage }}"/appimage/*.AppImage
+          test "$#" -eq 1
+          "$1" --appimage-extract-and-run --version
+          python3 packaging/check-appimage.py "$1" "${{ matrix.arch }}"
+          test "$("$1" --appimage-updateinformation)" = 'gh-releases-zsync|1800alex|sonicfast|latest|sonicfast-*-${{ matrix.arch }}.AppImage.zsync'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-packages-${{ matrix.id }}
+          path: dist/native-packages/packages
+          if-no-files-found: error
+
+  installation:
+    name: Install (${{ matrix.id }}, ${{ matrix.image }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, id: linux-amd64, image: 'ubuntu:24.04'}
+          - {os: ubuntu-24.04, id: linux-amd64, image: 'debian:13-slim'}
+          - {os: ubuntu-24.04, id: linux-amd64, image: 'fedora:latest'}
+          - {os: ubuntu-24.04-arm, id: linux-arm64, image: 'ubuntu:24.04'}
+          - {os: ubuntu-24.04-arm, id: linux-arm64, image: 'debian:13-slim'}
+          - {os: ubuntu-24.04-arm, id: linux-arm64, image: 'fedora:latest'}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: native-packages-${{ matrix.id }}
+          path: dist/native-packages/packages
+      - name: Install, check runtime libraries and uninstall
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: bash packaging/test-install.sh "$IMAGE" dist/native-packages

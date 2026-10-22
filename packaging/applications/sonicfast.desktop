@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Sonicfast
+GenericName=Music Player
+Comment=A native OpenSubsonic music client
+Exec=sonicfast
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;
+Keywords=subsonic;music;player;streaming;sonicfast;
+Icon=sonicfast
+StartupNotify=true
+StartupWMClass=sonicfast
