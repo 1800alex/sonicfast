@@ -128,7 +128,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         if: runner.os == 'Linux'
         with:
-          ruby-version: '4.0'
+          ruby-version: "4.0"
       - name: Install nFPM
         if: runner.os == 'Linux'
         run: bash .github/scripts/install-nfpm.sh
@@ -168,7 +168,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         if: runner.os == 'Windows'
         with:
-          ruby-version: '4.0'
+          ruby-version: "4.0"
       - name: Windows Installer package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -236,7 +236,7 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '4.0'
+          ruby-version: "4.0"
       - name: Install native packaging
         run: gem install native-packages --version 0.10.0 --no-document
 

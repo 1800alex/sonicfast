@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -184,7 +184,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         if: runner.os == 'Windows'
         with:
-          ruby-version: '4.0'
+          ruby-version: "4.0"
       - name: Windows Installer package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -271,7 +271,7 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '4.0'
+          ruby-version: "4.0"
           bundler-cache: true
           working-directory: docs
 

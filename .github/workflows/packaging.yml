@@ -2,10 +2,28 @@ name: Packaging
 
 on:
   push:
-    branches: [main]
-    paths: [Cargo.toml, Cargo.lock, native-packages.yaml, packaging/**, contrib/omarchy/**, .github/scripts/install-nfpm.sh, .github/workflows/packaging.yml]
+    branches: [main, master]
+    paths:
+      [
+        Cargo.toml,
+        Cargo.lock,
+        native-packages.yaml,
+        packaging/**,
+        contrib/omarchy/**,
+        .github/scripts/install-nfpm.sh,
+        .github/workflows/packaging.yml,
+      ]
   pull_request:
-    paths: [Cargo.toml, Cargo.lock, native-packages.yaml, packaging/**, contrib/omarchy/**, .github/scripts/install-nfpm.sh, .github/workflows/packaging.yml]
+    paths:
+      [
+        Cargo.toml,
+        Cargo.lock,
+        native-packages.yaml,
+        packaging/**,
+        contrib/omarchy/**,
+        .github/scripts/install-nfpm.sh,
+        .github/workflows/packaging.yml,
+      ]
   workflow_dispatch:
 
 permissions:
@@ -41,7 +59,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '4.0'
+          ruby-version: "4.0"
       - name: Native build and packaging tools
         run: |
           sudo apt-get update
@@ -85,12 +103,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-24.04, id: linux-amd64, image: 'ubuntu:24.04'}
-          - {os: ubuntu-24.04, id: linux-amd64, image: 'debian:13-slim'}
-          - {os: ubuntu-24.04, id: linux-amd64, image: 'fedora:latest'}
-          - {os: ubuntu-24.04-arm, id: linux-arm64, image: 'ubuntu:24.04'}
-          - {os: ubuntu-24.04-arm, id: linux-arm64, image: 'debian:13-slim'}
-          - {os: ubuntu-24.04-arm, id: linux-arm64, image: 'fedora:latest'}
+          - { os: ubuntu-24.04, id: linux-amd64, image: "ubuntu:24.04" }
+          - { os: ubuntu-24.04, id: linux-amd64, image: "debian:13-slim" }
+          - { os: ubuntu-24.04, id: linux-amd64, image: "fedora:latest" }
+          - { os: ubuntu-24.04-arm, id: linux-arm64, image: "ubuntu:24.04" }
+          - { os: ubuntu-24.04-arm, id: linux-arm64, image: "debian:13-slim" }
+          - { os: ubuntu-24.04-arm, id: linux-arm64, image: "fedora:latest" }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
