@@ -12,14 +12,21 @@ def check(root, tag):
         raise ValueError("Expected a vMAJOR.MINOR.PATCH tag (optional prerelease suffix)")
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
     if tag != "v" + manifest["package"]["version"]:
-        raise ValueError("Tag must match Cargo.toml package.version")
+        raise ValueError(f"{tag} must match Cargo.toml package.version ({manifest['package']['version']})")
+    lock = tomllib.loads((root / "Cargo.lock").read_text())
+    if not any(package["name"] == manifest["package"]["name"]
+               and package["version"] == tag[1:] and "source" not in package
+               for package in lock.get("package", [])):
+        raise ValueError(f"Update Cargo.lock for package.version {tag[1:]} before tagging; builds use --locked")
     notes = root / "packaging/release-notes" / (tag + ".md")
     if not notes.is_file() or not notes.read_text().strip():
-        raise ValueError("Add reviewed Sonicfast release notes for this tag")
+        raise ValueError(f"Add nonempty, reviewed Sonicfast release notes at packaging/release-notes/{tag}.md "
+                         "before tagging; see PACKAGING.md (Prepare a release)")
     metadata = ET.parse(root / "packaging/flatpak/org.sonicfast.Sonicfast.metainfo.xml")
     entry = metadata.find("releases/release")
     if entry is None or entry.get("version") != tag[1:]:
-        raise ValueError("Update the first AppStream release entry for this tag")
+        raise ValueError(f"Update the first AppStream release entry in "
+                         f"packaging/flatpak/org.sonicfast.Sonicfast.metainfo.xml to {tag[1:]} before tagging")
 
 
 if __name__ == "__main__":

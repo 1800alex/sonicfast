@@ -20,7 +20,9 @@ Copilot triage and funding automation are not configured for this fork.
 
 ## Prepare a release
 
-1. Update `package.version` in `Cargo.toml` and regenerate `Cargo.lock` if needed.
+1. Update `package.version` in `Cargo.toml` and refresh `Cargo.lock` with Cargo
+   (for example, `cargo metadata --format-version 1 > /dev/null`). The lockfile's
+   Sonicfast package version must match; release builds use `--locked`.
 2. Update `sonicfast_version` in `docs/_config.yml` and the first `<release>` entry
    in `packaging/flatpak/org.sonicfast.Sonicfast.metainfo.xml` (version and date).
 3. Add reviewed `packaging/release-notes/vVERSION.md` describing Sonicfast's
@@ -33,10 +35,15 @@ Copilot triage and funding automation are not configured for this fork.
 5. Push the matching `vVERSION` tag when ready to publish. The workflow publishes
    a GitHub release automatically; tags with a prerelease suffix are prereleases.
 
-Tag validation runs before builds and requires the Cargo version, notes and
+Tag validation runs before builds and requires the Cargo manifest/lockfile versions, notes and
 AppStream version to agree. Builds use `--locked` and `--bin sonicfast`, preserving
 default features including MilkDrop. Cargo fetches published Libresonic crates;
 no local checkout or private backend is required.
+
+All release metadata must be committed before tagging. Rerunning a failed tag's
+workflow checks out that same tagged commit; it does not pick up later fixes on
+the branch. After correcting metadata, use a new version/tag or deliberately
+replace the failed tag so it points to the corrected commit.
 
 ## Artifacts
 

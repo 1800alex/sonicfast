@@ -23,6 +23,9 @@
   <url type="homepage">https://1800alex.github.io/sonicfast/</url>
   <url type="bugtracker">https://github.com/1800alex/sonicfast/issues</url>
   <releases>
+    <release version="0.14.2" date="2026-10-22">
+      <description><p>Saved server connections, credential-preserving disconnect, per-server queues and a Sync now library refresh control.</p></description>
+    </release>
     <release version="0.14.1" date="2026-10-22">
       <description><p>OpenSubsonic server playback, playlists, song feedback, lyrics, scrobbling and original downloads.</p></description>
     </release>
