@@ -4,6 +4,11 @@ Date: 2026-10-22. The `sonicfast` executable uses Libresonic/OpenSubsonic.
 The legacy executable remains available for comparison; this matrix records
 actual server/native evidence, not cross-platform release support.
 
+The [MPRIS artwork correction](mpris-artwork.md) verifies authenticated artwork
+through the app's loader into readable file URIs on a private Linux D-Bus session,
+including arrival, replacement and clearing. It adds no real-server or rendered
+GNOME Shell coverage.
+
 The [casting follow-up](adr-012-casting.md) adds native AirPlay Classic and Cast
 outputs. A Linux Docker Shairport Sync 5.6.1 receiver independently decodes the
 native Rust ALAC/RTP source into a private PulseAudio null sink. A certificate-pinned

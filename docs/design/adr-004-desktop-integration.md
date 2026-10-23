@@ -41,6 +41,11 @@ Date: 2026-10-21. Status: accepted for Phase 3.
   performed by a view action. Writes use existing atomic file helpers on workers.
   Artwork uses the retained bounded loader/scaler, with authenticated bytes from
   Libresonic and credential-free cache keys.
+- Desktop media controls receive a cached artwork file for internal `sonic-art:`
+  IDs on Linux as well as other platforms. Only public HTTP(S) artwork URLs may
+  be exported as URL fallbacks. The authenticated artwork cache write completes
+  before Ready/repaint so MPRIS can publish an existing file when art arrives.
+  See the [MPRIS artwork correction](mpris-artwork.md) for regression evidence.
 - Replace sign-in/account configuration with server profiles. Preserve general
   Appearance/skins/MilkDrop/EQ/storage settings. Omit unsupported Spotify account,
   proxy, playback-tuning and release controls. Hide/disable playlist/favorite,

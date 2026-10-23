@@ -4611,13 +4611,14 @@ impl App {
     /// player bar only ever draws the small cover, so on a miss the full-size
     /// artwork is fetched here -- the one request the controls add.
     ///
-    /// MPRIS passes `art_url` to the desktop, which fetches whatever it
-    /// wants: Linux needs no file and downloads nothing extra. A local
-    /// file's cover has no URL the desktop can fetch, so every platform
-    /// gets the copy the art loader keeps of it.
+    /// MPRIS can fetch public HTTP artwork itself. Embedded covers and
+    /// authenticated OpenSubsonic artwork use app-private IDs that the desktop
+    /// cannot resolve, so every platform gets the loader's cached file for them.
+    /// The authenticated server URL is never handed to the desktop.
     fn media_art_file(&mut self, ctx: &egui::Context, url: &str) -> Option<PathBuf> {
         let local = url.starts_with(crate::local_tags::ART_SCHEME);
-        if cfg!(target_os = "linux") && !local {
+        let server_art = url.starts_with("sonic-art:");
+        if cfg!(target_os = "linux") && !local && !server_art {
             return None;
         }
         if let Some((known, file)) = &self.media_art
@@ -4694,7 +4695,7 @@ impl App {
                     art_url: now
                         .art_url
                         .clone()
-                        .filter(|url| !url.starts_with(crate::local_tags::ART_SCHEME)),
+                        .filter(|url| url.starts_with("https://") || url.starts_with("http://")),
                     url: Some(now.uri.clone()),
                     ..MediaTrack::default()
                 }),
@@ -13446,6 +13447,8 @@ fn cover_error(locale: Locale, error: &crate::api::client::ApiError) -> String {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod media_art_tests;
 mod radio;
 
 #[cfg(test)]

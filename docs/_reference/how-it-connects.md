@@ -38,6 +38,9 @@ so receiver codec support applies and local EQ/visualization do not. Sonicfast
 keeps the queue and follows receiver playback status for progress and song end.
 
 LRCLIB lyrics and optional visualizer preset downloads contact external services.
+Desktop media controls, including GNOME's media panel, receive a local cached
+cover file after Sonicfast fetches authenticated server artwork. Internal artwork
+IDs and authenticated server URLs are not passed to the desktop.
 See [privacy]({{ '/privacy/' | relative_url }}) for the data involved.
 The default application has no Spotify authentication, Premium requirement,
 Connect session or browser login.

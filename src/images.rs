@@ -482,9 +482,14 @@ impl Inner {
             let bytes: Arc<[u8]> = bytes.into();
             let path = self.cache_path(url);
             let payload = bytes.clone();
-            self.runtime.spawn_blocking(move || {
-                let _ = fastframe_file::write(path.as_path(), payload.as_ref());
-            });
+            // Publish Ready/repaint only after the atomic file write finishes:
+            // desktop media controls consume the file, not the in-memory bytes.
+            let _ = self
+                .runtime
+                .spawn_blocking(move || {
+                    let _ = fastframe_file::write(path.as_path(), payload.as_ref());
+                })
+                .await;
             return Ok(bytes);
         }
         let path = self.cache_path(url);
