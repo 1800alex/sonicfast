@@ -41,6 +41,8 @@ pub fn login(app: &mut App, ui: &mut egui::Ui) {
                             } else {
                                 connections(app, ui);
                             }
+                            ui.add_space(16.0);
+                            crate::ui::settings::snapcast::signed_out(app, ui);
                         },
                     );
                 });

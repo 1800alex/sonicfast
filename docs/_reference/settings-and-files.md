@@ -11,6 +11,7 @@ Open Settings using the gear button. Search filters the settings rows.
 | Server | Manage connections, disconnect and Sync now |
 | Scrobbling | Enable reporting and set the percentage/time thresholds |
 | Downloads | Enable downloads, choose a folder and open the queue |
+| Snapcast | Send audio to Snapserver, receive synchronized PCM/FLAC and configure routing |
 | Playback | Choose the output device and native playback options |
 | Appearance | Themes, light/dark/system appearance and language |
 | Equalizer | Ten-band EQ, preamp and saved presets |
@@ -56,6 +57,12 @@ of matching content merely because they have the same name.
 Downloaded music belongs to the selected directory and survives sign-out. Changing
 the directory changes where availability is checked; it does not move old downloads.
 The app's existing state stores unfinished work separately from file availability.
+
+## Snapcast
+
+See [Snapcast audio]({{ '/snapcast/' | relative_url }}) for sending, built-in receiving,
+network consent, output/latency settings and the Docker playground. These settings
+are application-wide, separate from saved OpenSubsonic connections.
 
 ## Stored data
 

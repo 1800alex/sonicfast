@@ -12,6 +12,7 @@ use crate::theme::{self, Icon, Palette};
 use super::widgets;
 
 mod server;
+pub(crate) mod snapcast;
 
 const PLAYBACK_DIRTY_ID: &str = "playback-settings-dirty";
 pub(crate) const PERSONAL_APP_FOCUS_ID: &str = "focus-personal-app-setup";
@@ -395,6 +396,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .unwrap_or(false);
     let mut changed = false;
     let mut any_visible = app.subsonic && server::show(app, ui, &needle);
+    if app.subsonic {
+        any_visible |= snapcast::show(app, ui, &needle);
+    }
     let open_folder = gettext(locale, "Open folder");
 
     let wanted = app

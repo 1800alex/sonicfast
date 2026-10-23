@@ -16,6 +16,9 @@ ADR 009 and `docs/design/filesystem-availability.md` supersede the persistent
 download index with filesystem checks and unfinished work in existing app state.
 ADR 010 and `docs/design/connections-and-sync.md` cover saved connections,
 credential-preserving disconnect and catalogue-only Sync.
+ADR 011 covers the owner's v0.15.0 Snapcast sender/receiver scope, superseding
+the original deferral for this integration. Evidence is in `docs/design/snapcast.md`;
+run `make snapcast-test` for changes to that boundary. General remote queue control stays deferred.
 Run `sonicfast` for OpenSubsonic; `sonicfast-legacy` is the retained Spotify/demo comparison binary.
 This intentional OpenSubsonic fork of Spotifast supersedes inherited Spotify-only policy.
 Application/crate/packaging branding is Sonicfast. Preserve upstream attribution, real
@@ -24,7 +27,8 @@ storage and IPC separate from Sonicfast server profiles.
 
 - Execute one gated design phase at a time. Record actual results and failures
   before advancing. Do not redesign the UI or rewrite the audio device stack.
-  Casting, remote control and multiroom are deferred.
+  Snapcast audio transport is authorized for v0.15.0; other casting and remote
+  queue control remain deferred.
 - Preserve egui/fastframe, navigation, themes, EQ, visualizers and mini-player.
   Review intended visible changes with demo captures kept outside tracked files.
 - Views in `src/ui/` emit `Action`s; apply them after drawing in `src/app.rs`.

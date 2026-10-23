@@ -1,0 +1,12 @@
+# Distinct project/volume/ports from the disposable test environment.
+services:
+  server:
+    ports: !override
+      - "${SNAPCAST_BIND:-127.0.0.1}:4993:4953"
+      - "${SNAPCAST_BIND:-127.0.0.1}:1714:1704"
+      - "127.0.0.1:1715:1705"
+      - "127.0.0.1:1781:1780"
+  reference-a:
+    command: ["snapclient", "tcp://server:1704", "--hostID", "reference-a", "--player", "file:filename=null", "--logsink", "stderr", "--logfilter", "*:warning"]
+  reference-b:
+    command: ["snapclient", "tcp://server:1704", "--hostID", "reference-b", "--player", "file:filename=null", "--logsink", "stderr", "--logfilter", "*:warning"]

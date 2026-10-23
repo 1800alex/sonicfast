@@ -19,6 +19,7 @@ pub enum Request {
     Disconnect,
     RemoveProfile(String),
     Sync,
+    Snapcast(crate::snapcast::Settings),
     Configure {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: downloads::Settings,
@@ -56,6 +57,7 @@ pub enum QueueAction {
     Skip(usize),
 }
 pub enum Event {
+    Snapcast(crate::snapcast::Status),
     LibraryRefresh,
     ProfileRemoving {
         id: String,

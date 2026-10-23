@@ -103,6 +103,27 @@ impl PcmOutput {
         }
     }
 
+    /// Network output reuses normalization, EQ, visualization and limiting,
+    /// without opening a native audio device. Volume is applied by the caller.
+    pub(crate) fn process_for_network(&mut self, block: PcmBlock<'_>) -> Vec<f64> {
+        let mut samples = self.convert(block);
+        self.processing.process(&mut samples);
+        samples
+    }
+
+    pub(crate) fn finish_for_network(&mut self) -> Vec<f64> {
+        let mut tail: Vec<f64> = self.resampler.as_mut().map_or_else(Vec::new, |resampler| {
+            resampler
+                .process(&[0.0; 128])
+                .into_iter()
+                .map(f64::from)
+                .collect()
+        });
+        tail.extend([0.0; 1024]);
+        self.processing.process(&mut tail);
+        tail
+    }
+
     fn write_normalized(
         &mut self,
         mut samples: Vec<f64>,

@@ -1,0 +1,76 @@
+services:
+  server:
+    build: .
+    environment:
+      SNAPCAST_CODEC: ${SNAPCAST_CODEC:-flac}
+      SNAPCAST_EXTRA_FORMAT: ${SNAPCAST_EXTRA_FORMAT:-}
+    ports:
+      - "127.0.0.1:${SNAPCAST_SOURCE_PORT:-}:4953"
+      - "127.0.0.1:${SNAPCAST_FORMAT_PORT:-}:4954"
+      - "127.0.0.1:${SNAPCAST_STREAM_PORT:-}:1704"
+      - "127.0.0.1:${SNAPCAST_CONTROL_PORT:-}:1705"
+      - "127.0.0.1:${SNAPCAST_HTTP_PORT:-}:1780"
+    volumes:
+      - server-state:/state
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/fixture-healthcheck"]
+      interval: 1s
+      timeout: 3s
+      retries: 45
+    stop_grace_period: 3s
+  reference-a:
+    build: .
+    command: ["snapclient", "tcp://server:1704", "--hostID", "reference-a", "--player", "file:filename=/captures/audio.pcm", "--logsink", "stderr", "--logfilter", "*:warning"]
+    depends_on:
+      server:
+        condition: service_healthy
+    stop_grace_period: 2s
+  reference-b:
+    build: .
+    command: ["snapclient", "tcp://server:1704", "--hostID", "reference-b", "--player", "file:filename=/captures/audio.pcm", "--logsink", "stderr", "--logfilter", "*:warning"]
+    depends_on:
+      server:
+        condition: service_healthy
+    stop_grace_period: 2s
+  music:
+    profiles: [native-test]
+    build: .
+    command: ["python3", "/usr/local/bin/music-fixture.py"]
+    ports:
+      - "127.0.0.1:${SNAPCAST_MUSIC_PORT:-}:8080"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/rest/ping.view', timeout=2).read()"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  pulse:
+    profiles: [native-test]
+    build: .
+    command: ["pulseaudio", "--system", "--daemonize=no", "--disallow-exit", "--exit-idle-time=-1", "--use-pid-file=no", "-n", "--load=module-native-protocol-tcp listen=0.0.0.0 port=4713 auth-anonymous=1", "--load=module-null-sink sink_name=sonicfast_snapcast rate=48000 channels=2", "--load=module-null-sink sink_name=sonicfast_reference rate=48000 channels=2"]
+    ports:
+      - "127.0.0.1:${SNAPCAST_PULSE_PORT:-}:4713"
+    healthcheck:
+      test: ["CMD", "pactl", "--server=tcp:127.0.0.1:4713", "info"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 2s
+  reference-pulse:
+    profiles: [native-test]
+    build: .
+    command: ["snapclient", "tcp://server:1704", "--hostID", "reference-pulse", "--player", "pulse:server=tcp:pulse:4713,buffer_time=20", "--soundcard", "sonicfast_reference", "--logsink", "stderr", "--logfilter", "*:warning"]
+    depends_on:
+      server:
+        condition: service_healthy
+      pulse:
+        condition: service_healthy
+    stop_grace_period: 2s
+  tone:
+    profiles: [tone]
+    build: .
+    command: ["python3", "/usr/local/bin/tone.py"]
+    depends_on:
+      server:
+        condition: service_healthy
+volumes:
+  server-state:

@@ -1108,6 +1108,7 @@ pub enum Action {
         label: String,
     },
     ToggleSaved(String),
+    SnapcastSettings(Box<crate::snapcast::Settings>),
     LibrarySettings {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: crate::subsonic::downloads::Settings,

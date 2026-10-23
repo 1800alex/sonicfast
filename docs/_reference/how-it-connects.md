@@ -26,6 +26,11 @@ sink, preserving output-device selection, fades, EQ and visualization taps.
 A configured local original is preferred before streaming. Download jobs also run
 in the background and publish progress to the UI.
 
+Optional [Snapcast audio]({{ '/snapcast/' | relative_url }}) routes the processed source
+to a separate Snapserver. Its built-in receiver uses Snapcast clock/chunk timestamps
+and the native audio backend; no external client is launched. Music-server
+authentication and the local song queue remain separate.
+
 LRCLIB lyrics and optional visualizer preset downloads contact external services.
 See [privacy]({{ '/privacy/' | relative_url }}) for the data involved.
 The default application has no Spotify authentication, Premium requirement,

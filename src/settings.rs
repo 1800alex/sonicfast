@@ -270,6 +270,7 @@ pub struct Settings {
     pub local_files_folder: Option<String>,
     pub scrobbling: libresonic::playback::scrobble::ScrobbleSettings,
     pub downloads: crate::subsonic::downloads::Settings,
+    pub snapcast: crate::snapcast::Settings,
     pub theme: ThemeChoice,
     /// The interface language; older files without it follow the system.
     pub language: LanguageChoice,
@@ -474,6 +475,7 @@ impl Default for Settings {
             local_files_folder: None,
             scrobbling: Default::default(),
             downloads: Default::default(),
+            snapcast: Default::default(),
             audio_buffer_ms: default_buffer_ms(),
             audio_cache: true,
             audio_cache_mb: 1024,

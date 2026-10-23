@@ -1,0 +1,34 @@
+name: Snapcast integration
+on:
+  push:
+    branches: [main, master]
+    paths: [src/**, examples/snapcast_probe.rs, integration/snapcast/**, Cargo.toml, Cargo.lock, Makefile, .github/workflows/snapcast.yml]
+  pull_request:
+    paths: [src/**, examples/snapcast_probe.rs, integration/snapcast/**, Cargo.toml, Cargo.lock, Makefile, .github/workflows/snapcast.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: snapcast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  interoperability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config cmake clang libclang-dev libasound2-dev libpipewire-0.3-dev libpulse-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Native receiver / official Snapcast interoperability
+        run: make snapcast-test
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapcast-integration-evidence
+          path: .cache/snapcast/integration-*
+          if-no-files-found: ignore

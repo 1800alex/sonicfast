@@ -16,6 +16,12 @@ workspace and Phase 6 extraction timing below. Following public preparation,
 Sonicfast now consumes published Libresonic 0.1.0 crates from crates.io, with no
 checkout location requirement. Public source: https://github.com/1800alex/libresonic. See `docs/design/adr-001-boundaries.md`.
 
+**Authorized extension (2026-10-23):** The owner requested v0.15.0 Snapcast
+sending and a built-in receiver, with Docker integration and manual smoke
+fixtures. ADR 011 defines this bounded Phase 7 audio-transport work. Other
+casting and remote queue control remain deferred. See
+`docs/design/adr-011-snapcast.md` and `docs/design/snapcast.md`.
+
 > **Agent handoff:** This document is the product and technical brief for an intentional fork of Spotifast. Read it in full, then execute one gated phase at a time. Do not assume examples in this document are already implemented. Do not replace the interface, rewrite the audio device stack, or start remote synchronization work during the MVP.
 
 ## 1. Executive summary

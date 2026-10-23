@@ -21,14 +21,16 @@ server through [Libresonic](https://github.com/1800alex/libresonic).
 - Download original files in the background, manage the queue, and prefer local
   originals for playback. Availability comes from direct filesystem checks;
   no recursive library scan or persistent download index is required.
+- Send music to Snapserver and receive synchronized PCM/FLAC audio with the built-in Snapcast receiver.
 - Choose audio outputs and use the retained EQ, visualizers, themes and classic
   Winamp mini-player.
 
 Sonicfast is under active development. Linux/Navidrome has native integration
 coverage, with targeted checks against other subsonic api compatible daemons.
 Physical hardware, other operating systems and release packages need further validation.
-Casting, remote control, podcasts,
-radio and multiroom playback are outside the current OpenSubsonic scope.
+General casting, remote queue control, podcasts and radio remain outside the
+current scope. Snapcast transport is available from 0.15.0; physical multiroom
+synchronization still needs hardware validation.
 
 ## Build and run
 
@@ -102,3 +104,16 @@ Sonicfast is derived from Spotifast, retaining its MIT license and upstream noti
 Thanks to Carmine Paolino and the Spotifast contributors, the fastframe and
 librespot projects used by the retained foundation, and the OpenSubsonic,
 Navidrome and LRCLIB communities. See [LICENSE](LICENSE).
+
+## Snapcast
+
+Open **Settings → Snapcast** to send music to a Snapserver TCP source or receive
+PCM/FLAC streams directly; no companion `snapclient` is required. Receiving is also
+available from the sign-in screen. Both modes are disabled by default and require
+explicit consent to unencrypted transport on a trusted network. Use both modes
+to hear your own source through the synchronized receiver.
+
+`make snapcast-test` runs the Docker integration suite. For an independent manual
+playground, run `make snapcast-smoke-up` and `make snapcast-smoke-tone`, then point
+the receiver at `127.0.0.1:1714`. Stop the tone before sending your own music to
+source port `4993`. See [Snapcast setup and smoke instructions](integration/snapcast/README.md).

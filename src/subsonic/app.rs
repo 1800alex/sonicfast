@@ -88,6 +88,7 @@ impl App {
 
     pub(super) fn subsonic_event(&mut self, event: S) {
         match event {
+            S::Snapcast(status) => self.snapcast_status = status,
             S::LibraryRefresh => self.refresh_server_library(),
             S::ProfileRemoving { id, busy } => {
                 if busy {
@@ -268,6 +269,18 @@ impl App {
             return None;
         }
         let request = match action {
+            Action::SnapcastSettings(mut settings) => {
+                if let Err(error) = settings.validate() {
+                    self.toast_error(&error);
+                    return None;
+                }
+                if settings.receive && settings.client_id.is_empty() {
+                    settings.client_id = format!("sonicfast-{:016x}", rand::random::<u64>());
+                }
+                self.settings.snapcast = *settings.clone();
+                self.mark_settings_dirty();
+                Request::Snapcast(*settings)
+            }
             Action::LibrarySettings {
                 scrobble,
                 downloads,

@@ -7,7 +7,8 @@ contribution restrictions are superseded by this fork's scope.
 
 Keep rendering responsive, credentials protected, and existing audio/device
 processing intact. Test behavior that can regress. No browser, telemetry or
-hosted backend is planned. Casting and multiroom are outside MVP. Avoid unrelated
+hosted backend is planned. Snapcast audio transport is authorized from 0.15.0 (ADR 011); other casting and
+remote queue control remain outside scope. Avoid unrelated
 settings and UI redesigns. Keep review screenshots outside git.
 
 Libresonic is a separate [public repository](https://github.com/1800alex/libresonic),
@@ -73,3 +74,9 @@ builds and package checks. The default application keeps self-updates disabled;
 the inherited upstream updater key is not used to sign Sonicfast releases.
 
 Contributions use the project's MIT license.
+
+Snapcast changes require `make snapcast-test` in addition to unit/Clippy checks.
+It builds the actual sender/native receiver probe and tests both PCM and FLAC
+against pinned Docker Snapcast packages, without a private library or audio
+hardware. `integration/snapcast/README.md` documents the independent manual smoke
+project. Do not substitute virtual-device alignment for a physical-speaker claim.

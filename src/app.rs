@@ -417,6 +417,7 @@ pub struct App {
     pub(crate) reveal_theme_changes: bool,
     pub custom_themes: theme::Catalog,
 
+    pub snapcast_status: crate::snapcast::Status,
     pub auth: AuthStatus,
     pub user: Option<User>,
     pub local_device_id: Option<String>,
@@ -1010,6 +1011,9 @@ impl App {
             )
         };
         if subsonic {
+            backend.send(Command::Subsonic(crate::subsonic::Request::Snapcast(
+                settings.snapcast.clone(),
+            )));
             backend.send(Command::Subsonic(crate::subsonic::Request::Configure {
                 scrobble: settings.scrobbling.clone(),
                 downloads: settings.downloads.clone(),
@@ -1129,6 +1133,7 @@ impl App {
             control_devices_stale: true,
             offline: false,
             network_reachable: true,
+            snapcast_status: Default::default(),
             palette,
             locale,
             window_level_supported: true,
@@ -8966,6 +8971,10 @@ impl App {
     }
 
     fn start_play(&mut self, request: PlayRequest, shuffle_first: bool) {
+        if self.subsonic && self.settings.snapcast.receive && !self.settings.snapcast.send {
+            self.toast_error("Snapcast Receive is active. Enable Send as well, or disable Receive, before playing local songs.");
+            return;
+        }
         // Shuffle applies across contexts until disabled. A selected row still
         // starts first; otherwise choose a random starting track.
         let mut request = request;
@@ -11054,6 +11063,7 @@ impl App {
                     self.backend.api(ApiRequest::SetSaved { uris, saved });
                 }
             }
+            Action::SnapcastSettings(_) => {}
             Action::LibrarySettings { .. }
             | Action::DownloadTracks(_)
             | Action::ProbeDownloads(_)
@@ -13441,6 +13451,46 @@ mod tests {
         assert!(
             crate::http::build_client(&app.applied_proxy).is_ok(),
             "Preset downloads must have a usable network configuration at startup"
+        );
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn snapcast_settings_require_consent_and_persist_a_unique_receiver_identity() {
+        let mut app = test_app("snapcast-settings");
+        app.subsonic = true;
+        let mut settings = crate::snapcast::Settings {
+            receive: true,
+            ..Default::default()
+        };
+        app.subsonic_action(Action::SnapcastSettings(Box::new(settings.clone())));
+        assert!(!app.settings.snapcast.receive);
+        settings.allow_insecure = true;
+        app.subsonic_action(Action::SnapcastSettings(Box::new(settings)));
+        assert!(app.settings.snapcast.receive);
+        let id = app.settings.snapcast.client_id.clone();
+        assert!(id.starts_with("sonicfast-") && id.len() > 16);
+        let encoded = serde_json::to_string(&app.settings).unwrap();
+        let restored: Settings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.snapcast.client_id, id);
+        app.backend.shutdown();
+    }
+    #[test]
+    fn receive_only_rejects_local_song_play_before_changing_the_queue() {
+        let mut app = test_app("snapcast-local-play");
+        app.subsonic = true;
+        app.settings.snapcast.receive = true;
+        app.start_play(
+            PlayRequest {
+                uris: vec!["subsonic:fixture:track:song".into()],
+                ..Default::default()
+            },
+            false,
+        );
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("Snapcast Receive is active"))
         );
         app.backend.shutdown();
     }

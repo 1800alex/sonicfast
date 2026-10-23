@@ -222,6 +222,7 @@ pub async fn run(
     let path = dirs.config.join("servers.json");
     let mut profiles = Profiles::load(&path);
     let secrets = Secrets::new(dirs.state.clone());
+    let snapcast = crate::snapcast::Manager::new();
     let mut scrobble_settings = l::playback::scrobble::ScrobbleSettings::default();
     let mut download_settings = super::downloads::Settings::default();
     let mut downloads: Option<super::downloads::Manager> = None;
@@ -464,6 +465,34 @@ pub async fn run(
                         }
                         emit(&tx, &wake, E::Subsonic(super::Event::Profiles(profiles.clone())));
                     }
+                    b::Command::Subsonic(Request::Snapcast(settings)) => {
+                        if let Err(error) = settings.validate() { emit(&tx, &wake, E::Error(error)); continue; }
+                        serial += 1;
+                        pending_spec = None;
+                        if let Some(fetch) = play_fetch.take() { fetch.abort(); }
+                        // Retire the old feeder before changing destinations. Keep
+                        // the queue/position, but require explicit Play afterwards.
+                        let state = player.as_ref().map(Player::snapshot);
+                        if let Some(old) = player.take() { old.shutdown().await.ok(); }
+                        updates = None;
+                        let _ = snapcast.configure(settings);
+                        if let Some(client) = &client {
+                            match make_player(client.clone(), &config, local_library.clone(), snapcast.shared.clone()) {
+                                Ok(p) => {
+                                    if let (Some(track), Some(state)) = (queue.current(), state) {
+                                        let _ = p.load(track.id.clone(), false);
+                                        let _ = p.seek(state.position_ms);
+                                    }
+                                    last_end = None;
+                                    updates = Some(p.subscribe());
+                                    player = Some(p);
+                                }
+                                Err(error) => emit(&tx, &wake, E::Error(error)),
+                            }
+                        }
+                        listening.suspend();
+                        emit(&tx, &wake, E::Subsonic(super::Event::Snapcast(snapcast.shared.status())));
+                    }
                     b::Command::Subsonic(Request::Sync) => {
                         // Cancel catalogue reads only. Playback, writes, scrobbles
                         // and download jobs keep their existing generation.
@@ -630,6 +659,11 @@ pub async fn run(
                         emit(&tx, &wake, queue_event(&queue, &source_positions));
                     }
                     b::Command::Player(command) | b::Command::Subsonic(Request::Transport(command)) => {
+                        let route = snapcast.shared.settings();
+                        if route.receive && !route.send && matches!(command, P::Toggle | P::Next | P::Previous) {
+                            emit(&tx, &wake, E::Error("Snapcast Receive is active. Enable Send as well, or disable Receive, before playing local songs.".into()));
+                            continue;
+                        }
                         if let Some(p) = &player {
                             if matches!(command, P::Next | P::Previous) {
                                 serial += 1;
@@ -684,6 +718,7 @@ pub async fn run(
                                     None
                                 }
                                 P::Volume(v) | P::VolumePreview(v) => {
+                                    config.initial_volume = v;
                                     p.set_volume(v);
                                     None
                                 }
@@ -731,7 +766,7 @@ pub async fn run(
                         if let (Some(client), Some(old)) = (&client, player.take()) {
                             let state = old.snapshot();
                             old.shutdown().await.ok();
-                            match make_player(client.clone(), &config,local_library.clone()) {
+                            match make_player(client.clone(), &config,local_library.clone(), snapcast.shared.clone()) {
                                 Ok(p) => {
                                     if let Some(track) = queue.current() {
                                         if let Some(manager)=&downloads {manager.library.register(std::slice::from_ref(track));}
@@ -855,7 +890,7 @@ pub async fn run(
                             let tx=tx.clone();let wake=wake.clone();
                             reporter=Some(super::scrobbling::Reporter::spawn(service.clone(),receipt_path(&dirs,&profile.id),Arc::new(move |s|emit(&tx,&wake,E::Error(s)))));
                         }
-                        match make_player(service.clone(), &config,local_library.clone()) {
+                        match make_player(service.clone(), &config,local_library.clone(), snapcast.shared.clone()) {
                             Ok(p) => {
                                 if let Some(resume) = saved_resume
                                     && resume
@@ -1059,6 +1094,7 @@ pub async fn run(
                 }
             }
             _ = interval.tick() => {
+                emit(&tx, &wake, E::Subsonic(super::Event::Snapcast(snapcast.shared.status())));
                 if dirty && let (Some(profile), Some(p)) = (&selected, &player) {
                     let _ = save_resume(&dirs, &profile.id, &queue, &source_positions, p.snapshot().position_ms,&listening,&download_queues).await;
                     dirty = false;
@@ -1170,6 +1206,7 @@ pub async fn run(
     if let Some(manager) = downloads.take() {
         manager.shutdown().await;
     }
+    snapcast.shutdown().await;
     drop(reporter);
     tasks.abort_all();
     secrets.invalidate();
@@ -1220,10 +1257,12 @@ fn make_player(
     client: Arc<Client>,
     config: &EngineConfig,
     library: Arc<std::sync::Mutex<Option<super::downloads::Library>>>,
+    snapcast: crate::snapcast::Shared,
 ) -> Result<Player, String> {
     let p = Player::spawn(
         Arc::new(super::downloads::LocalFirst { client, library }),
-        Box::new(crate::sink::PcmOutput::new(
+        Box::new(crate::snapcast::RoutedOutput::new(
+            snapcast,
             config.audio_device.clone(),
             config.eq.clone(),
             config.tap.clone(),

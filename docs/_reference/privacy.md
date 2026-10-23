@@ -10,10 +10,16 @@ documentation site includes no analytics script.
 | Destination | Data and purpose |
 | --- | --- |
 | Your configured music server | Authentication, library requests, playback streams, playlist/heart/rating changes and enabled scrobble reports |
+| Your optional Snapcast server | Processed audio when Send is enabled; receiver identity, clock messages and received audio when Receive is enabled |
 | LRCLIB | Artist, title, album and duration for lyric lookup |
 | Visualizer preset sources | Optional preset downloads used by MilkDrop |
 | Your operating system's credential store | Remembered server secrets |
 | Your selected download directory | Original music files you download |
+
+Snapcast is disabled by default and requires independent consent to unencrypted TCP
+on a trusted network. Music-server credentials are never sent to Snapserver.
+The generated receiver ID is stored in settings and identifies this app to that
+server. Received audio does not create local song history or scrobbles.
 
 Normal web hosting can produce access logs outside the application's control.
 The server and external services have their own data-retention policies.

@@ -99,3 +99,12 @@ The [connection-list follow-up](connections-and-sync.md) exercises two saved
 logical profiles against the disposable Navidrome, isolated resume state,
 credential-preserving disconnect/reconnect and metadata refresh during playback.
 It adds no physical audio, independent-server or operating-system coverage.
+
+## Snapcast audio transport (v0.15.0)
+
+Snapcast 0.35.0 is an audio-distribution server, separate from the music-server
+compatibility entries above. Linux Docker coverage includes Sonicfast's sender,
+built-in PCM/FLAC receiver, real-App decode/routing, official reference clients,
+isolated native output, stream/format changes, mute and outage/recovery.
+See [ADR 011](adr-011-snapcast.md) and the [implementation evidence](snapcast.md).
+Physical-speaker and other-platform synchronization remain unverified.
