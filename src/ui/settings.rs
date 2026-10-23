@@ -11,6 +11,7 @@ use crate::theme::{self, Icon, Palette};
 
 use super::widgets;
 
+pub(crate) mod casting;
 mod server;
 pub(crate) mod snapcast;
 
@@ -398,6 +399,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let mut any_visible = app.subsonic && server::show(app, ui, &needle);
     if app.subsonic {
         any_visible |= snapcast::show(app, ui, &needle);
+        any_visible |= casting::show(app, ui, &needle);
     }
     let open_folder = gettext(locale, "Open folder");
 

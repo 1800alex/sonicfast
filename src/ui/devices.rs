@@ -374,6 +374,10 @@ fn output_picker(app: &mut App, ui: &mut egui::Ui) {
 }
 
 pub fn popup(app: &mut App, ctx: &egui::Context) {
+    if app.subsonic {
+        super::settings::casting::popup(app, ctx);
+        return;
+    }
     if !app.show_devices {
         return;
     }

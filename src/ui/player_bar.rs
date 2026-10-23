@@ -982,12 +982,19 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, transport_
         ));
     }
     ui.add_space(4.0);
-    let remote = now.is_some_and(|now| !now.local);
+    let network_output = app.subsonic
+        && app.settings.casting.kind(app.settings.snapcast.send) != crate::casting::Kind::Local;
+    let remote = now.is_some_and(|now| !now.local) || network_output;
     // Playing elsewhere, the button shows that device's own icon.
-    let icon = now
-        .filter(|now| !now.local)
-        .and_then(|now| now.device_kind.as_deref())
-        .map_or(Icon::Speaker, super::devices::device_icon);
+    let icon = if network_output
+        && app.settings.casting.kind(app.settings.snapcast.send) == crate::casting::Kind::Chromecast
+    {
+        Icon::Cast
+    } else {
+        now.filter(|now| !now.local)
+            .and_then(|now| now.device_kind.as_deref())
+            .map_or(Icon::Speaker, super::devices::device_icon)
+    };
     let devices = theme::icon_button(
         ui,
         icon,

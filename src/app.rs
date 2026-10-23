@@ -418,6 +418,9 @@ pub struct App {
     pub custom_themes: theme::Catalog,
 
     pub snapcast_status: crate::snapcast::Status,
+    pub casting_status: String,
+    pub casting_receivers: Vec<crate::casting::Receiver>,
+    pub casting_scanning: bool,
     pub auth: AuthStatus,
     pub user: Option<User>,
     pub local_device_id: Option<String>,
@@ -1014,6 +1017,9 @@ impl App {
             backend.send(Command::Subsonic(crate::subsonic::Request::Snapcast(
                 settings.snapcast.clone(),
             )));
+            let mut output = settings.casting.clone();
+            output.output = Some(output.kind(settings.snapcast.send));
+            backend.send(Command::Subsonic(crate::subsonic::Request::Casting(output)));
             backend.send(Command::Subsonic(crate::subsonic::Request::Configure {
                 scrobble: settings.scrobbling.clone(),
                 downloads: settings.downloads.clone(),
@@ -1134,6 +1140,9 @@ impl App {
             offline: false,
             network_reachable: true,
             snapcast_status: Default::default(),
+            casting_status: String::new(),
+            casting_receivers: Vec::new(),
+            casting_scanning: false,
             palette,
             locale,
             window_level_supported: true,
@@ -8971,7 +8980,11 @@ impl App {
     }
 
     fn start_play(&mut self, request: PlayRequest, shuffle_first: bool) {
-        if self.subsonic && self.settings.snapcast.receive && !self.settings.snapcast.send {
+        if self.subsonic
+            && self.settings.snapcast.receive
+            && self.settings.casting.kind(self.settings.snapcast.send)
+                == crate::casting::Kind::Local
+        {
             self.toast_error("Snapcast Receive is active. Enable Send as well, or disable Receive, before playing local songs.");
             return;
         }
@@ -11064,6 +11077,7 @@ impl App {
                 }
             }
             Action::SnapcastSettings(_) => {}
+            Action::CastingSettings(_) | Action::DiscoverOutputs => {}
             Action::LibrarySettings { .. }
             | Action::DownloadTracks(_)
             | Action::ProbeDownloads(_)

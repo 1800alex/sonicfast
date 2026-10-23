@@ -19,6 +19,11 @@ credential-preserving disconnect and catalogue-only Sync.
 ADR 011 covers the owner's v0.15.0 Snapcast sender/receiver scope, superseding
 the original deferral for this integration. Evidence is in `docs/design/snapcast.md`;
 run `make snapcast-test` for changes to that boundary. General remote queue control stays deferred.
+ADR 012 covers the owner's subsequent AirPlay Classic/Cast output authorization,
+the shared output picker and explicitly certificate-pinned software Cast targets.
+Run `make casting-test` for AirPlay changes; retain device-authentication and
+temporary-media-lease tests for Cast changes. Do not claim Google SDK or physical
+device compatibility from a software receiver test.
 Run `sonicfast` for OpenSubsonic; `sonicfast-legacy` is the retained Spotify/demo comparison binary.
 This intentional OpenSubsonic fork of Spotifast supersedes inherited Spotify-only policy.
 Application/crate/packaging branding is Sonicfast. Preserve upstream attribution, real
@@ -27,8 +32,8 @@ storage and IPC separate from Sonicfast server profiles.
 
 - Execute one gated design phase at a time. Record actual results and failures
   before advancing. Do not redesign the UI or rewrite the audio device stack.
-  Snapcast audio transport is authorized for v0.15.0; other casting and remote
-  queue control remain deferred.
+  Snapcast, AirPlay Classic and Cast audio outputs are authorized (ADRs 011/012);
+  a general remote queue coordinator remains deferred.
 - Preserve egui/fastframe, navigation, themes, EQ, visualizers and mini-player.
   Review intended visible changes with demo captures kept outside tracked files.
 - Views in `src/ui/` emit `Action`s; apply them after drawing in `src/app.rs`.

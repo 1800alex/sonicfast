@@ -1,10 +1,10 @@
-name: Snapcast integration
+name: Network audio integration
 on:
   push:
     branches: [main, master]
-    paths: [src/**, examples/snapcast_probe.rs, integration/snapcast/**, Cargo.toml, Cargo.lock, Makefile, .github/workflows/snapcast.yml]
+    paths: [src/**, examples/snapcast_probe.rs, examples/casting_probe.rs, integration/**, Cargo.toml, Cargo.lock, Makefile, .github/workflows/snapcast.yml]
   pull_request:
-    paths: [src/**, examples/snapcast_probe.rs, integration/snapcast/**, Cargo.toml, Cargo.lock, Makefile, .github/workflows/snapcast.yml]
+    paths: [src/**, examples/snapcast_probe.rs, examples/casting_probe.rs, integration/**, Cargo.toml, Cargo.lock, Makefile, .github/workflows/snapcast.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -25,10 +25,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Native receiver / official Snapcast interoperability
         run: make snapcast-test
+      - name: Native AirPlay and protected Cast interoperability
+        run: make casting-test
       - name: Upload diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: snapcast-integration-evidence
-          path: .cache/snapcast/integration-*
+          path: |
+            .cache/snapcast/integration-*
+            .cache/casting/integration-*
           if-no-files-found: ignore

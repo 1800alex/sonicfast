@@ -1,0 +1,8 @@
+*
+!casting/
+!casting/Dockerfile
+!casting/start.py
+!casting/cast_receiver.py
+!snapcast/
+!snapcast/music-fixture.py
+!snapcast/tone.flac

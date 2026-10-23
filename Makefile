@@ -103,3 +103,8 @@ snapcast-smoke-stop-tone: ## Stop the test tone before sending music from Sonicf
 
 snapcast-smoke-logs: ## Show recent manual Snapcast server/client logs.
 	$(PYTHON) integration/snapcast/smoke.py logs
+
+.PHONY: casting-test
+casting-test: ## Test AirPlay and Cast playback through isolated Docker audio receivers.
+	$(CARGO) build --locked --example casting_probe --example snapcast_probe
+	$(PYTHON) integration/casting/test.py

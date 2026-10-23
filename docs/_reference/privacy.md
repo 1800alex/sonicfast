@@ -11,6 +11,8 @@ documentation site includes no analytics script.
 | --- | --- |
 | Your configured music server | Authentication, library requests, playback streams, playlist/heart/rating changes and enabled scrobble reports |
 | Your optional Snapcast server | Processed audio when Send is enabled; receiver identity, clock messages and received audio when Receive is enabled |
+| Selected AirPlay receiver | Processed audio, volume and timing messages after enabling LAN casting |
+| Selected Cast receiver | Song metadata, playback controls and a temporary URL for the selected original; the receiver fetches it from this computer |
 | LRCLIB | Artist, title, album and duration for lyric lookup |
 | Visualizer preset sources | Optional preset downloads used by MilkDrop |
 | Your operating system's credential store | Remembered server secrets |
@@ -20,6 +22,13 @@ Snapcast is disabled by default and requires independent consent to unencrypted 
 on a trusted network. Music-server credentials are never sent to Snapserver.
 The generated receiver ID is stored in settings and identifies this app to that
 server. Received audio does not create local song history or scrobbles.
+
+AirPlay/Cast sending also requires explicit LAN consent. AirPlay Classic is
+unencrypted. Cast control uses authenticated TLS (Google device authentication
+or an explicitly entered certificate fingerprint for an owner-operated target).
+The selected original is served over LAN HTTP with a per-track bearer path,
+restricted to that receiver's IP; it is revoked on replacement/disconnect/shutdown.
+Music-server credentials and original authenticated URLs are never shared.
 
 Normal web hosting can produce access logs outside the application's control.
 The server and external services have their own data-retention policies.

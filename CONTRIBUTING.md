@@ -7,8 +7,9 @@ contribution restrictions are superseded by this fork's scope.
 
 Keep rendering responsive, credentials protected, and existing audio/device
 processing intact. Test behavior that can regress. No browser, telemetry or
-hosted backend is planned. Snapcast audio transport is authorized from 0.15.0 (ADR 011); other casting and
-remote queue control remain outside scope. Avoid unrelated
+hosted backend is planned. Snapcast audio transport is authorized from 0.15.0 (ADR 011);
+AirPlay Classic and Cast outputs are authorized by ADR 012. General remote queue
+coordination remains outside scope. Avoid unrelated
 settings and UI redesigns. Keep review screenshots outside git.
 
 Libresonic is a separate [public repository](https://github.com/1800alex/libresonic),
@@ -80,3 +81,10 @@ It builds the actual sender/native receiver probe and tests both PCM and FLAC
 against pinned Docker Snapcast packages, without a private library or audio
 hardware. `integration/snapcast/README.md` documents the independent manual smoke
 project. Do not substitute virtual-device alignment for a physical-speaker claim.
+
+AirPlay and Cast changes also require `make casting-test`. It checks the native
+ALAC sender and actual app login/decode/output paths against Shairport Sync and
+a certificate-pinned software Cast receiver, with isolated audio captures. Retain
+Cast authentication and temporary HTTP lease tests. See
+[integration/casting/README.md](integration/casting/README.md) for prerequisites
+and limits; software targets do not establish Google SDK or hardware compatibility.

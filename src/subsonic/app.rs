@@ -88,6 +88,14 @@ impl App {
 
     pub(super) fn subsonic_event(&mut self, event: S) {
         match event {
+            S::CastingStatus(status) => self.casting_status = status,
+            S::Receivers(result) => {
+                self.casting_scanning = false;
+                match result {
+                    Ok(receivers) => self.casting_receivers = receivers,
+                    Err(error) => self.toast_error(&error),
+                }
+            }
             S::Snapcast(status) => self.snapcast_status = status,
             S::LibraryRefresh => self.refresh_server_library(),
             S::ProfileRemoving { id, busy } => {
@@ -269,6 +277,30 @@ impl App {
             return None;
         }
         let request = match action {
+            Action::DiscoverOutputs => {
+                if self.casting_scanning {
+                    return None;
+                }
+                self.casting_scanning = true;
+                Request::DiscoverOutputs
+            }
+            Action::CastingSettings(settings) => {
+                if let Err(error) = settings.validate() {
+                    self.toast_error(&error);
+                    return None;
+                }
+                if settings.output == Some(crate::casting::Kind::Snapcast)
+                    && !self.settings.snapcast.allow_insecure
+                {
+                    self.toast_error("Configure and allow Snapcast in Settings first");
+                    return None;
+                }
+                self.settings.snapcast.send =
+                    settings.output == Some(crate::casting::Kind::Snapcast);
+                self.settings.casting = settings.clone();
+                self.mark_settings_dirty();
+                Request::Casting(settings)
+            }
             Action::SnapcastSettings(mut settings) => {
                 if let Err(error) = settings.validate() {
                     self.toast_error(&error);
@@ -278,6 +310,11 @@ impl App {
                     settings.client_id = format!("sonicfast-{:016x}", rand::random::<u64>());
                 }
                 self.settings.snapcast = *settings.clone();
+                if settings.send {
+                    self.settings.casting.output = Some(crate::casting::Kind::Snapcast);
+                } else if self.settings.casting.output == Some(crate::casting::Kind::Snapcast) {
+                    self.settings.casting.output = Some(crate::casting::Kind::Local);
+                }
                 self.mark_settings_dirty();
                 Request::Snapcast(*settings)
             }
@@ -563,8 +600,13 @@ impl App {
             Action::RemoveFromQueue { rows } => Request::Queue(QueueAction::Remove(rows)),
             Action::ClearQueue => Request::Queue(QueueAction::Clear),
             Action::ToggleDevicesPopup => {
-                self.open(Page::Settings);
+                self.show_devices = !self.show_devices;
                 self.backend.send(Command::ListOutputDevices);
+                if self.show_devices && !self.casting_scanning {
+                    self.casting_scanning = true;
+                    self.backend
+                        .send(Command::Subsonic(Request::DiscoverOutputs));
+                }
                 return None;
             }
             Action::Open(

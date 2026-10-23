@@ -2,6 +2,7 @@ use super::{
     QueueAction, Request, adapter as m,
     profile::{Profile, Profiles, Secrets},
 };
+use crate::casting::Player;
 use crate::{
     api::models as v,
     backend::{self as b, ApiRequest as A, ApiResponse as R, Event as E},
@@ -10,7 +11,7 @@ use crate::{
     player::{EngineConfig, LoadSpec, LocalState, LocalTrack, Playback, PlayerCommand as P},
 };
 use libresonic::playback::{
-    Phase, Player,
+    Phase,
     queue::{Queue, Repeat},
 };
 use libresonic::{self as l, MusicService, opensubsonic::Client};
@@ -223,6 +224,7 @@ pub async fn run(
     let mut profiles = Profiles::load(&path);
     let secrets = Secrets::new(dirs.state.clone());
     let snapcast = crate::snapcast::Manager::new();
+    let casting = crate::casting::Shared::default();
     let mut scrobble_settings = l::playback::scrobble::ScrobbleSettings::default();
     let mut download_settings = super::downloads::Settings::default();
     let mut downloads: Option<super::downloads::Manager> = None;
@@ -465,7 +467,15 @@ pub async fn run(
                         }
                         emit(&tx, &wake, E::Subsonic(super::Event::Profiles(profiles.clone())));
                     }
-                    b::Command::Subsonic(Request::Snapcast(settings)) => {
+                    b::Command::Subsonic(request @ (Request::Snapcast(_) | Request::Casting(_))) => {
+                        let mut settings=snapcast.shared.settings();
+                        let mut output=casting.settings();
+                        match request {
+                            Request::Snapcast(new)=>{settings=new;if settings.send{output.output=Some(crate::casting::Kind::Snapcast);}else if output.output==Some(crate::casting::Kind::Snapcast){output.output=Some(crate::casting::Kind::Local);}},
+                            Request::Casting(new)=>{output=new;settings.send=output.output==Some(crate::casting::Kind::Snapcast);},
+                            _=>unreachable!(),
+                        }
+                        if let Err(error)=output.validate(){emit(&tx,&wake,E::Error(error));continue;}
                         if let Err(error) = settings.validate() { emit(&tx, &wake, E::Error(error)); continue; }
                         serial += 1;
                         pending_spec = None;
@@ -475,9 +485,10 @@ pub async fn run(
                         let state = player.as_ref().map(Player::snapshot);
                         if let Some(old) = player.take() { old.shutdown().await.ok(); }
                         updates = None;
-                        let _ = snapcast.configure(settings);
+                        if settings!=snapcast.shared.settings(){let _ = snapcast.configure(settings);}
+                        let _=casting.configure(output).await;
                         if let Some(client) = &client {
-                            match make_player(client.clone(), &config, local_library.clone(), snapcast.shared.clone()) {
+                            match make_player(client.clone(), &config, local_library.clone(), snapcast.shared.clone(), casting.clone()) {
                                 Ok(p) => {
                                     if let (Some(track), Some(state)) = (queue.current(), state) {
                                         let _ = p.load(track.id.clone(), false);
@@ -492,6 +503,13 @@ pub async fn run(
                         }
                         listening.suspend();
                         emit(&tx, &wake, E::Subsonic(super::Event::Snapcast(snapcast.shared.status())));
+                    }
+                    b::Command::Subsonic(Request::DiscoverOutputs)=>{
+                        let tx=tx.clone();let wake=wake.clone();
+                        tokio::spawn(async move {
+                            let result=tokio::task::spawn_blocking(crate::casting::discover).await.unwrap_or_else(|_|Err("Receiver discovery stopped".into()));
+                            emit(&tx,&wake,E::Subsonic(super::Event::Receivers(result)));
+                        });
                     }
                     b::Command::Subsonic(Request::Sync) => {
                         // Cancel catalogue reads only. Playback, writes, scrobbles
@@ -660,7 +678,7 @@ pub async fn run(
                     }
                     b::Command::Player(command) | b::Command::Subsonic(Request::Transport(command)) => {
                         let route = snapcast.shared.settings();
-                        if route.receive && !route.send && matches!(command, P::Toggle | P::Next | P::Previous) {
+                        if route.receive && casting.settings().kind(route.send)==crate::casting::Kind::Local && matches!(command, P::Toggle | P::Next | P::Previous) {
                             emit(&tx, &wake, E::Error("Snapcast Receive is active. Enable Send as well, or disable Receive, before playing local songs.".into()));
                             continue;
                         }
@@ -766,7 +784,7 @@ pub async fn run(
                         if let (Some(client), Some(old)) = (&client, player.take()) {
                             let state = old.snapshot();
                             old.shutdown().await.ok();
-                            match make_player(client.clone(), &config,local_library.clone(), snapcast.shared.clone()) {
+                            match make_player(client.clone(), &config,local_library.clone(), snapcast.shared.clone(), casting.clone()) {
                                 Ok(p) => {
                                     if let Some(track) = queue.current() {
                                         if let Some(manager)=&downloads {manager.library.register(std::slice::from_ref(track));}
@@ -890,7 +908,7 @@ pub async fn run(
                             let tx=tx.clone();let wake=wake.clone();
                             reporter=Some(super::scrobbling::Reporter::spawn(service.clone(),receipt_path(&dirs,&profile.id),Arc::new(move |s|emit(&tx,&wake,E::Error(s)))));
                         }
-                        match make_player(service.clone(), &config,local_library.clone(), snapcast.shared.clone()) {
+                        match make_player(service.clone(), &config,local_library.clone(), snapcast.shared.clone(), casting.clone()) {
                             Ok(p) => {
                                 if let Some(resume) = saved_resume
                                     && resume
@@ -1094,6 +1112,7 @@ pub async fn run(
                 }
             }
             _ = interval.tick() => {
+                emit(&tx,&wake,E::Subsonic(super::Event::CastingStatus(casting.status())));
                 emit(&tx, &wake, E::Subsonic(super::Event::Snapcast(snapcast.shared.status())));
                 if dirty && let (Some(profile), Some(p)) = (&selected, &player) {
                     let _ = save_resume(&dirs, &profile.id, &queue, &source_positions, p.snapshot().position_ms,&listening,&download_queues).await;
@@ -1258,20 +1277,38 @@ fn make_player(
     config: &EngineConfig,
     library: Arc<std::sync::Mutex<Option<super::downloads::Library>>>,
     snapcast: crate::snapcast::Shared,
+    casting: crate::casting::Shared,
 ) -> Result<Player, String> {
-    let p = Player::spawn(
-        Arc::new(super::downloads::LocalFirst { client, library }),
-        Box::new(crate::snapcast::RoutedOutput::new(
-            snapcast,
-            config.audio_device.clone(),
-            config.eq.clone(),
-            config.tap.clone(),
-        )),
-        tokio::runtime::Handle::current(),
-    )
-    .map_err(|e| e.to_string())?;
+    let kind = casting.settings().kind(snapcast.settings().send);
+    let provider = Arc::new(super::downloads::LocalFirst {
+        client: client.clone(),
+        library,
+    });
+    if kind == crate::casting::Kind::Chromecast {
+        let p = Player::cast(client, provider, casting).map_err(|e| e.to_string())?;
+        p.set_volume(config.initial_volume);
+        return Ok(p);
+    }
+    let output: Box<dyn libresonic::playback::AudioOutput> =
+        if kind == crate::casting::Kind::AirPlay {
+            Box::new(crate::casting::airplay::Sender::new(
+                casting,
+                config.eq.clone(),
+                config.tap.clone(),
+            ))
+        } else {
+            Box::new(crate::snapcast::RoutedOutput::new(
+                snapcast,
+                config.audio_device.clone(),
+                config.eq.clone(),
+                config.tap.clone(),
+            ))
+        };
+    let p =
+        libresonic::playback::Player::spawn(provider, output, tokio::runtime::Handle::current())
+            .map_err(|e| e.to_string())?;
     p.set_volume(config.initial_volume);
-    Ok(p)
+    Ok(Player::local(p, kind == crate::casting::Kind::AirPlay))
 }
 
 async fn read(client: &Client, request: A) -> Vec<E> {

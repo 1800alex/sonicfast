@@ -12,6 +12,7 @@ Open Settings using the gear button. Search filters the settings rows.
 | Scrobbling | Enable reporting and set the percentage/time thresholds |
 | Downloads | Enable downloads, choose a folder and open the queue |
 | Snapcast | Send audio to Snapserver, receive synchronized PCM/FLAC and configure routing |
+| Casting | Choose Local/AirPlay/Cast/Snapcast, allow LAN casting and configure a manual receiver or explicit certificate pin |
 | Playback | Choose the output device and native playback options |
 | Appearance | Themes, light/dark/system appearance and language |
 | Equalizer | Ten-band EQ, preamp and saved presets |
@@ -63,6 +64,10 @@ The app's existing state stores unfinished work separately from file availabilit
 See [Snapcast audio]({{ '/snapcast/' | relative_url }}) for sending, built-in receiving,
 network consent, output/latency settings and the Docker playground. These settings
 are application-wide, separate from saved OpenSubsonic connections.
+
+The [casting guide]({{ '/casting/' | relative_url }}) describes the player output
+picker and manual receiver settings. Receiver identity pins are public certificate
+fingerprints; temporary media bearer paths are kept in memory, never in settings.
 
 ## Stored data
 

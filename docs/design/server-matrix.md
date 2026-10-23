@@ -4,6 +4,14 @@ Date: 2026-10-22. The `sonicfast` executable uses Libresonic/OpenSubsonic.
 The legacy executable remains available for comparison; this matrix records
 actual server/native evidence, not cross-platform release support.
 
+The [casting follow-up](adr-012-casting.md) adds native AirPlay Classic and Cast
+outputs. A Linux Docker Shairport Sync 5.6.1 receiver independently decodes the
+native Rust ALAC/RTP source into a private PulseAudio null sink. A certificate-pinned
+software Cast target decodes the actual App's synthetic Subsonic FLAC through
+the protected local media listener and mpv. Wrong-pin rejection and Cast
+pause/seek/resume are exercised. This is not Google SDK or real Chromecast
+hardware compatibility evidence. See [executed casting evidence](casting.md).
+
 The [M4A follow-up](m4a-playback.md) adds AAC-LC/ALAC decoder coverage and an
 actual App AAC/M4A playback path. Tail metadata uses advertised, validated raw
 byte ranges; fast-start files can stream without them. This does not claim

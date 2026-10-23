@@ -38,6 +38,81 @@ use serde_json::{Value, json};
 pub(crate) const SERVICE: &str = "_googlecast._tcp.local.";
 /// Spotify's Cast receiver app.
 const SPOTIFY_APP: &str = "CC32E753";
+const MEDIA_APP: &str = "CC1AD845";
+const NS_MEDIA: &str = "urn:x-cast:com.google.cast.media";
+
+/// Authenticated generic Cast transport. Never sends a music-server credential.
+/// The same device certificate/nonce validation as the legacy sender runs before
+/// the receiver learns a short-lived local media URL.
+pub(crate) struct MediaConnection {
+    stream: TlsStream,
+    transport: String,
+    request: u64,
+}
+impl MediaConnection {
+    pub(crate) fn connect(target: SocketAddr, pin: &str, deadline: Instant) -> Result<Self> {
+        if Instant::now() >= deadline {
+            bail!("Cast connection deadline exceeded");
+        }
+        let mut stream = connect(target.ip(), target.port(), deadline)?;
+        let mut channel = Channel {
+            stream: &mut stream,
+            deadline,
+        };
+        if pin.is_empty() {
+            channel.authenticate(&GOOGLE_ROOTS, UnixTime::now())?;
+        } else {
+            use sha2::{Digest, Sha256};
+            let certificate = channel
+                .stream
+                .peer_certificate()
+                .ok_or_else(|| anyhow!("No receiver certificate"))?;
+            if !format!("{:x}", Sha256::digest(certificate)).eq_ignore_ascii_case(pin) {
+                bail!("Receiver certificate fingerprint does not match");
+            }
+        }
+        let transport = channel.launch_media()?;
+        Ok(Self {
+            stream,
+            transport,
+            request: 10,
+        })
+    }
+    pub(crate) fn local_ip(&self) -> Result<IpAddr> {
+        Ok(self.stream.sock.local_addr()?.ip())
+    }
+    pub(crate) fn peer_ip(&self) -> Result<IpAddr> {
+        Ok(self.stream.sock.peer_addr()?.ip())
+    }
+    pub(crate) fn media(&mut self, mut value: Value) -> Result<Value> {
+        self.request += 1;
+        let id = self.request;
+        value["requestId"] = json!(id);
+        let mut channel = Channel {
+            stream: &mut self.stream,
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        channel.media_request(&self.transport, value, id)
+    }
+    pub(crate) fn volume(&mut self, volume: u16) -> Result<()> {
+        self.request += 1;
+        let id = self.request;
+        let mut channel = Channel {
+            stream: &mut self.stream,
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        channel.send(PLATFORM,NS_RECEIVER,json!({"type":"SET_VOLUME","requestId":id,"volume":{"level":f64::from(volume)/65535.0,"muted":volume==0}}))?;
+        channel.wait(NS_RECEIVER, |v| {
+            (v["requestId"].as_u64() == Some(id)).then(|| {
+                if v["type"] == "RECEIVER_STATUS" {
+                    Ok(())
+                } else {
+                    Err(anyhow!("Cast volume failed"))
+                }
+            })
+        })
+    }
+}
 /// Google's Cast roots, as Chromium and Open Screen trust them
 /// (openscreen `cast/common/certificate/`). SHA-256 fingerprints:
 ///
@@ -165,6 +240,43 @@ struct Channel<'a, S> {
 
 /// The steps of an activation.
 impl<S: Stream> Channel<'_, S> {
+    fn media_request(&mut self, transport: &str, value: Value, id: u64) -> Result<Value> {
+        self.send(transport, NS_MEDIA, value)?;
+        self.wait(NS_MEDIA, |message| {
+            if message["requestId"].as_u64() != Some(id) {
+                return None;
+            }
+            Some(if message["type"] == "MEDIA_STATUS" {
+                Ok(message.clone())
+            } else {
+                Err(anyhow!("Cast media request failed"))
+            })
+        })
+    }
+    fn launch_media(&mut self) -> Result<String> {
+        self.send(PLATFORM, NS_CONNECTION, json!({"type":"CONNECT"}))?;
+        self.send(
+            PLATFORM,
+            NS_RECEIVER,
+            json!({"type":"LAUNCH","appId":MEDIA_APP,"requestId":2}),
+        )?;
+        let transport = self.wait(NS_RECEIVER, |message| {
+            if message["requestId"].as_u64() != Some(2) {
+                return None;
+            }
+            if message["type"] == "LAUNCH_ERROR" {
+                return Some(Err(anyhow!("Cast receiver cannot launch media")));
+            }
+            message["status"]["applications"]
+                .as_array()?
+                .iter()
+                .find(|a| a["appId"] == MEDIA_APP)
+                .and_then(|a| a["transportId"].as_str())
+                .map(|v| Ok(v.to_owned()))
+        })?;
+        self.send(&transport, NS_CONNECTION, json!({"type":"CONNECT"}))?;
+        Ok(transport)
+    }
     /// Challenges the device to prove it has a certificate from one of
     /// `roots`, as Google's own senders do before anything else.
     fn authenticate(&mut self, roots: &[&[u8]], now: UnixTime) -> Result<()> {
@@ -1004,6 +1116,23 @@ mod tests {
                 return;
             }
             let payload = message.json().unwrap();
+            if payload["appId"] == MEDIA_APP {
+                self.reply(PLATFORM,NS_RECEIVER,json!({"type":"RECEIVER_STATUS","requestId":99,"status":{"applications":[{"appId":"other","transportId":"ignored"}]}}));
+                self.reply(PLATFORM, NS_HEARTBEAT, json!({"type":"PING"}));
+                self.reply(PLATFORM,NS_RECEIVER,json!({"type":"RECEIVER_STATUS","requestId":2,"status":{"applications":[{"appId":MEDIA_APP,"transportId":"media-7"}]}}));
+                self.sent.push(message);
+                return;
+            }
+            if message.namespace == NS_MEDIA {
+                self.reply(
+                    "media-7",
+                    NS_MEDIA,
+                    json!({"type":"MEDIA_STATUS","requestId":999,"status":[]}),
+                );
+                self.reply("media-7",NS_MEDIA,json!({"type":"MEDIA_STATUS","requestId":payload["requestId"],"status":[{"mediaSessionId":7,"currentTime":12.0,"playerState":"PLAYING"}]}));
+                self.sent.push(message);
+                return;
+            }
             match payload["type"].as_str().unwrap() {
                 "LAUNCH" => {
                     // A status for another app first, then a heartbeat, then Spotify.
@@ -1100,6 +1229,43 @@ mod tests {
             Instant::now() + TIMEOUT,
             |_, _| Ok("token-1".into()),
         )
+    }
+
+    #[test]
+    fn generic_cast_launch_authenticates_and_media_requests_ignore_stale_replies() {
+        let mut device = FakeDevice::new("addUserResponse");
+        let mut channel = Channel {
+            stream: &mut device,
+            deadline: Instant::now() + Duration::from_secs(2),
+        };
+        channel.authenticate(&TEST_ROOTS, TEST_NOW).unwrap();
+        let transport = channel.launch_media().unwrap();
+        assert_eq!(transport, "media-7");
+        for (id, kind) in [
+            (11, "LOAD"),
+            (12, "PAUSE"),
+            (13, "SEEK"),
+            (14, "PLAY"),
+            (15, "GET_STATUS"),
+            (16, "STOP"),
+        ] {
+            let response = channel
+                .media_request(
+                    &transport,
+                    json!({"type":kind,"requestId":id,"mediaSessionId":7}),
+                    id,
+                )
+                .unwrap();
+            assert_eq!(response["requestId"], id);
+        }
+        assert_eq!(device.sent[0].namespace, NS_DEVICE_AUTH);
+        assert!(
+            device
+                .sent
+                .iter()
+                .any(|m| m.json().is_some_and(|v| v["appId"] == MEDIA_APP))
+        );
+        assert!(!device.sent.iter().any(|m| m.namespace == NS_SPOTIFY));
     }
 
     #[test]

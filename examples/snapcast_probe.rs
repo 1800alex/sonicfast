@@ -30,6 +30,20 @@ enum Mode {
         #[arg(long, default_value_t = 4953)]
         port: u16,
     },
+    AppCast {
+        #[arg(long)]
+        music_url: String,
+        #[arg(long, default_value_t = 8009)]
+        port: u16,
+        #[arg(long)]
+        fingerprint: String,
+    },
+    AppAirplay {
+        #[arg(long)]
+        music_url: String,
+        #[arg(long, default_value_t = 5000)]
+        port: u16,
+    },
     Receive {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -93,7 +107,19 @@ async fn main() -> anyhow::Result<()> {
             }).await??;
         }
         Mode::AppSend { music_url, port } => {
-            tokio::task::spawn_blocking(move || app_send(music_url, port)).await??;
+            tokio::task::spawn_blocking(move || app_send(music_url, port, None)).await??;
+        }
+        Mode::AppCast {
+            music_url,
+            port,
+            fingerprint,
+        } => {
+            tokio::task::spawn_blocking(move || app_send(music_url, port, Some(fingerprint)))
+                .await??;
+        }
+        Mode::AppAirplay { music_url, port } => {
+            tokio::task::spawn_blocking(move || app_send(music_url, port, Some(String::new())))
+                .await??;
         }
         Mode::Receive {
             host,
@@ -143,7 +169,7 @@ fn safe(error: libresonic::playback::OutputError) -> anyhow::Error {
     anyhow::anyhow!("Audio output: {error:?}")
 }
 
-fn app_send(music_url: String, port: u16) -> anyhow::Result<()> {
+fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow::Result<()> {
     use sonicfast::{
         app::{App, AppOptions},
         backend::{AuthStatus, Waker},
@@ -164,10 +190,26 @@ fn app_send(music_url: String, port: u16) -> anyhow::Result<()> {
     let settings = AppSettings {
         volume: u16::MAX,
         snapcast: Settings {
-            send: true,
+            send: fingerprint.is_none(),
             allow_insecure: true,
             source_port: port,
             ..Default::default()
+        },
+        casting: if let Some(pin) = &fingerprint {
+            sonicfast::casting::Settings {
+                output: Some(if pin.is_empty() {
+                    sonicfast::casting::Kind::AirPlay
+                } else {
+                    sonicfast::casting::Kind::Chromecast
+                }),
+                host: "127.0.0.1".into(),
+                port,
+                name: "Docker Cast fixture".into(),
+                allow_lan: true,
+                certificate_sha256: pin.clone(),
+            }
+        } else {
+            Default::default()
         },
         ..Default::default()
     };
@@ -226,9 +268,14 @@ fn app_send(music_url: String, port: u16) -> anyhow::Result<()> {
     // Applying the route must carry the latest player volume into its rebuilt
     // output, rather than restoring the volume from application startup.
     app.actions.push(Action::SetVolume(75));
-    app.actions.push(Action::SnapcastSettings(Box::new(
-        app.settings.snapcast.clone(),
-    )));
+    if fingerprint.is_none() {
+        app.actions.push(Action::SnapcastSettings(Box::new(
+            app.settings.snapcast.clone(),
+        )));
+    } else {
+        app.actions
+            .push(Action::CastingSettings(app.settings.casting.clone()));
+    }
     frame(&mut app);
 
     app.actions.push(Action::PlayUris {
@@ -236,9 +283,31 @@ fn app_send(music_url: String, port: u16) -> anyhow::Result<()> {
         index: 0,
     });
     let mut played = false;
+    let mut cast_stage = 0;
+    let mut stage_at = Instant::now();
     loop {
         frame(&mut app);
         played |= app.local.playback == Playback::Playing;
+        if fingerprint.is_some() {
+            if cast_stage == 0
+                && app.local.playback == Playback::Playing
+                && app.local.position_ms >= 250
+            {
+                app.actions.push(Action::TogglePlay);
+                cast_stage = 1;
+                stage_at = Instant::now();
+            } else if cast_stage == 1
+                && app.local.playback == Playback::Paused
+                && stage_at.elapsed() > Duration::from_millis(150)
+            {
+                app.actions.push(Action::Seek(500));
+                cast_stage = 2;
+                stage_at = Instant::now();
+            } else if cast_stage == 2 && stage_at.elapsed() > Duration::from_millis(150) {
+                app.actions.push(Action::TogglePlay);
+                cast_stage = 3;
+            }
+        }
         anyhow::ensure!(app.local.error.is_none(), "App playback failed");
         if played && app.local.playback != Playback::Playing && app.local.position_ms >= 1500 {
             break;
@@ -251,13 +320,32 @@ fn app_send(music_url: String, port: u16) -> anyhow::Result<()> {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    let completed_position = app.local.position_ms;
+    let replay_cast = fingerprint.as_ref().is_some_and(|pin| !pin.is_empty());
+    if replay_cast {
+        app.actions.push(Action::TogglePlay);
+        loop {
+            frame(&mut app);
+            anyhow::ensure!(app.local.error.is_none(), "Cast replay failed");
+            if app.local.playback == Playback::Playing
+                && (250..1500).contains(&app.local.position_ms)
+            {
+                break;
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "Finished Cast song did not restart"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     anyhow::ensure!(
         app.local.volume == sonicfast::app::percent_to_volume(75),
         "Route apply lost the current volume"
     );
     println!(
         "{}",
-        serde_json::json!({"event":"app_sent","position_ms":app.local.position_ms,"output":app.snapcast_status.sender})
+        serde_json::json!({"event":"app_sent","position_ms":completed_position,"cast_replayed":replay_cast,"output":if fingerprint.is_some(){&app.casting_status}else{&app.snapcast_status.sender},"cast_controls_exercised":cast_stage==3})
     );
     app.backend.shutdown();
     Ok(())

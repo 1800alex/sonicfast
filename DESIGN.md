@@ -22,6 +22,11 @@ fixtures. ADR 011 defines this bounded Phase 7 audio-transport work. Other
 casting and remote queue control remain deferred. See
 `docs/design/adr-011-snapcast.md` and `docs/design/snapcast.md`.
 
+**Further authorized extension (2026-10-23):** The owner approved AirPlay Classic
+and Cast sending, a shared output picker and a garage software Cast target.
+ADR 012 supersedes the remaining audio-casting deferral for those outputs;
+general remote queue coordination and AirPlay 2 grouping remain deferred.
+
 > **Agent handoff:** This document is the product and technical brief for an intentional fork of Spotifast. Read it in full, then execute one gated phase at a time. Do not assume examples in this document are already implemented. Do not replace the interface, rewrite the audio device stack, or start remote synchronization work during the MVP.
 
 ## 1. Executive summary

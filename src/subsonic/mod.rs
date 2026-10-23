@@ -20,6 +20,8 @@ pub enum Request {
     RemoveProfile(String),
     Sync,
     Snapcast(crate::snapcast::Settings),
+    Casting(crate::casting::Settings),
+    DiscoverOutputs,
     Configure {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: downloads::Settings,
@@ -57,6 +59,8 @@ pub enum QueueAction {
     Skip(usize),
 }
 pub enum Event {
+    CastingStatus(String),
+    Receivers(Result<Vec<crate::casting::Receiver>, String>),
     Snapcast(crate::snapcast::Status),
     LibraryRefresh,
     ProfileRemoving {
