@@ -14,6 +14,10 @@ hardware compatibility evidence. See [executed casting evidence](casting.md).
 The subsequent [Pioneer handshake correction](casting.md#hardware-handshake-correction-2026-10-23)
 adds a VSX-1123 RTSP/clock exchange and ten-second silent native sender test.
 Audible output on that stereo still needs a listening retry.
+The [automatic settings follow-up](casting.md#automatic-settings-and-playback-handoff-2026-10-23)
+adds app-level loading/playing/paused output changes and automatic recovery after
+correcting a Cast certificate pin, with receive-only warnings and draft regression
+coverage. It adds no physical hardware or independent music-server coverage.
 
 The [M4A follow-up](m4a-playback.md) adds AAC-LC/ALAC decoder coverage and an
 actual App AAC/M4A playback path. Tail metadata uses advertised, validated raw

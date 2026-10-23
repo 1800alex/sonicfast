@@ -27,7 +27,7 @@ network codec, independent of the MP3/FLAC/M4A original music file.
 
 1. Open **Settings → Snapcast**.
 2. Enter the Snapcast server's hostname/IP address and source port (normally 4953).
-3. Enable **Trusted network** and **Send music**, then **Apply / reconnect**.
+3. Enable **Trusted network** and **Send music**. Changes apply automatically.
 4. Press Play on a song from your music library.
 5. In Snapweb or your existing Snapcast controller, assign the desired receiver
    group to the **Sonicfast** stream.
@@ -40,7 +40,10 @@ It does not silently switch to local speakers or replay an old network backlog.
 
 ## Receive audio
 
-Enable **Receive audio**, enter the receiver port (normally **1704**) and apply.
+Enter the receiver port (normally **1704**) and enable **Receive audio**.
+Switches apply immediately; text/number edits apply after a short typing pause.
+Invalid fields show **Not applied** and keep the last working configuration.
+Use **Reconnect** only when you want to retry the same configuration.
 Receiving also works before signing in: choose **Snapcast audio…** on the sign-in
 screen. It is independent of the selected OpenSubsonic connection.
 
@@ -65,9 +68,13 @@ applying the sender EQ again. It does not populate the local song queue, create
 song metadata or submit local scrobbles.
 
 Enable **both Send and Receive** to hear your own source in sync with other
-Snapcast clients. Receive-only mode suspends local music playback. Applying any
-routing change preserves the selected local song/position but restores it paused.
-The bottom song transport controls the local source, not other Snapcast streams.
+Snapcast clients. Receive-only mode suspends the Local song queue and displays
+a warning. Enable Send, turn off Receive, or select another output to play your
+queue. Explicitly selecting Local turns off Receive and shows a notice.
+Otherwise output changes preserve the selected song, position and play/pause
+state, including a song that is still loading. AirPlay/Cast can coexist with the
+receiver; a notice explains that received audio still plays through the receiver
+device. The bottom song transport controls your queue, not other Snapcast streams.
 
 ## Latency and security
 
@@ -96,7 +103,7 @@ Run both commands: the first starts the server, and the second feeds it audio.
 it can appear while the server has no audio source playing.
 
 In Sonicfast choose host `127.0.0.1`, **receiver port 1714**, enable Trusted network
-and Receive, and apply. The tone is original synthetic audio. The fixture includes
+and Receive. Settings apply automatically. The tone is original synthetic audio. The fixture includes
 Snapweb at [http://127.0.0.1:1781](http://127.0.0.1:1781).
 
 To send your own music instead, first run `make snapcast-smoke-stop-tone`, then

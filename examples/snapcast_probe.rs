@@ -187,6 +187,9 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
         cache: base.join("cache"),
     };
     dirs.ensure()?;
+    let recover_pin = fingerprint
+        .as_ref()
+        .is_some_and(|pin| !pin.is_empty() && *pin != "0".repeat(64));
     let settings = AppSettings {
         volume: u16::MAX,
         snapcast: Settings {
@@ -206,7 +209,11 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
                 port,
                 name: "Docker Cast fixture".into(),
                 allow_lan: true,
-                certificate_sha256: pin.clone(),
+                certificate_sha256: if recover_pin {
+                    "0".repeat(64)
+                } else {
+                    pin.clone()
+                },
             }
         } else {
             Default::default()
@@ -278,48 +285,115 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
     }
     frame(&mut app);
 
+    let reconnect = |app: &mut App| {
+        if fingerprint.is_none() {
+            app.actions.push(Action::SnapcastSettings(Box::new(
+                app.settings.snapcast.clone(),
+            )));
+        } else {
+            app.actions
+                .push(Action::CastingSettings(app.settings.casting.clone()));
+        }
+    };
     app.actions.push(Action::PlayUris {
         uris: vec![sonicfast::subsonic::adapter::uri(&id)],
         index: 0,
     });
+    // A route change while metadata is still loading must preserve that request.
+    reconnect(&mut app);
     let mut played = false;
+    let mut fingerprint_corrected = false;
     let mut cast_stage = 0;
     let mut stage_at = Instant::now();
+    let mut route_position = 0;
     loop {
         frame(&mut app);
         played |= app.local.playback == Playback::Playing;
-        if fingerprint.is_some() {
-            if cast_stage == 0
-                && app.local.playback == Playback::Playing
-                && app.local.position_ms >= 250
-            {
-                app.actions.push(Action::TogglePlay);
-                cast_stage = 1;
-                stage_at = Instant::now();
-            } else if cast_stage == 1
-                && app.local.playback == Playback::Paused
-                && stage_at.elapsed() > Duration::from_millis(150)
-            {
-                app.actions.push(Action::Seek(500));
-                cast_stage = 2;
-                stage_at = Instant::now();
-            } else if cast_stage == 2 && stage_at.elapsed() > Duration::from_millis(150) {
-                app.actions.push(Action::TogglePlay);
-                cast_stage = 3;
+        if recover_pin && !played && app.local.error.is_some() {
+            if !fingerprint_corrected {
+                let mut settings = app.settings.casting.clone();
+                settings.certificate_sha256 = fingerprint.clone().unwrap();
+                app.actions.push(Action::EditCastingSettings {
+                    settings,
+                    immediate: false,
+                });
+                fingerprint_corrected = true;
             }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "Corrected fingerprint did not automatically reconnect and play"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+        if cast_stage == 0
+            && app.local.playback == Playback::Playing
+            && app.local.position_ms >= 250
+        {
+            route_position = app.local.position_ms;
+            reconnect(&mut app);
+            cast_stage = 1;
+            stage_at = Instant::now();
+        } else if cast_stage == 1
+            && stage_at.elapsed() >= Duration::from_millis(500)
+            && app.local.playback == Playback::Playing
+            && app.local.position_ms >= route_position + 100
+        {
+            // Switching while playing must restart automatically; no Play action.
+            app.actions.push(Action::TogglePlay);
+            cast_stage = 2;
+            stage_at = Instant::now();
+        } else if cast_stage == 2
+            && app.local.playback == Playback::Paused
+            && stage_at.elapsed() > Duration::from_millis(150)
+        {
+            route_position = app.local.position_ms;
+            reconnect(&mut app);
+            cast_stage = 3;
+            stage_at = Instant::now();
+        } else if cast_stage == 3 {
+            anyhow::ensure!(
+                app.local.playback != Playback::Playing,
+                "Changing outputs restarted paused music"
+            );
+            if stage_at.elapsed() < Duration::from_millis(400)
+                || app.local.playback != Playback::Paused
+                || app.local.position_ms.abs_diff(route_position) >= 100
+            {
+                anyhow::ensure!(
+                    Instant::now() < deadline,
+                    "Paused output did not restore its position"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            app.actions.push(Action::Seek(500));
+            cast_stage = 4;
+            stage_at = Instant::now();
+        } else if cast_stage == 4 && stage_at.elapsed() > Duration::from_millis(150) {
+            app.actions.push(Action::TogglePlay);
+            cast_stage = 5;
         }
         anyhow::ensure!(app.local.error.is_none(), "App playback failed");
-        if played && app.local.playback != Playback::Playing && app.local.position_ms >= 1500 {
+        if played
+            && cast_stage == 5
+            && app.local.playback != Playback::Playing
+            && app.local.position_ms >= 1500
+        {
             break;
         }
         anyhow::ensure!(
             Instant::now() < deadline,
-            "App-to-Snapcast playback did not complete: {:?}, {} ms",
+            "App output transitions did not complete at stage {cast_stage}: {:?}, {} ms",
             app.local.playback,
             app.local.position_ms
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    anyhow::ensure!(
+        cast_stage == 5,
+        "Output transition controls were not exercised"
+    );
     let completed_position = app.local.position_ms;
     let replay_cast = fingerprint.as_ref().is_some_and(|pin| !pin.is_empty());
     if replay_cast {
@@ -345,7 +419,7 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
     );
     println!(
         "{}",
-        serde_json::json!({"event":"app_sent","position_ms":completed_position,"cast_replayed":replay_cast,"output":if fingerprint.is_some(){&app.casting_status}else{&app.snapcast_status.sender},"cast_controls_exercised":cast_stage==3})
+        serde_json::json!({"event":"app_sent","position_ms":completed_position,"cast_replayed":replay_cast,"output":if fingerprint.is_some(){&app.casting_status}else{&app.snapcast_status.sender},"fingerprint_auto_recovered":recover_pin && fingerprint_corrected,"cast_controls_exercised":cast_stage==5,"output_auto_resumed":true,"paused_output_stayed_paused":true,"load_survived_output_change":true})
     );
     app.backend.shutdown();
     Ok(())

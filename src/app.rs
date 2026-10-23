@@ -421,6 +421,8 @@ pub struct App {
     pub casting_status: String,
     pub casting_receivers: Vec<crate::casting::Receiver>,
     pub casting_scanning: bool,
+    pub casting_draft: Option<(crate::casting::Settings, Instant)>,
+    pub snapcast_draft: Option<(crate::snapcast::Settings, Instant)>,
     pub auth: AuthStatus,
     pub user: Option<User>,
     pub local_device_id: Option<String>,
@@ -1143,6 +1145,8 @@ impl App {
             casting_status: String::new(),
             casting_receivers: Vec::new(),
             casting_scanning: false,
+            casting_draft: None,
+            snapcast_draft: None,
             palette,
             locale,
             window_level_supported: true,
@@ -8981,11 +8985,12 @@ impl App {
 
     fn start_play(&mut self, request: PlayRequest, shuffle_first: bool) {
         if self.subsonic
-            && self.settings.snapcast.receive
-            && self.settings.casting.kind(self.settings.snapcast.send)
-                == crate::casting::Kind::Local
+            && let Some(warning) = self
+                .settings
+                .casting
+                .playback_warning(&self.settings.snapcast)
         {
-            self.toast_error("Snapcast Receive is active. Enable Send as well, or disable Receive, before playing local songs.");
+            self.toast_error(warning);
             return;
         }
         // Shuffle applies across contexts until disabled. A selected row still
@@ -10683,6 +10688,12 @@ impl App {
     /// Apply one queued UI action after drawing, updating optimistic local state
     /// and scheduling any backend work or preference persistence it requires.
     pub(crate) fn apply(&mut self, action: Action, ctx: &egui::Context) {
+        if matches!(
+            &action,
+            Action::EditCastingSettings { .. } | Action::EditSnapcastSettings { .. }
+        ) {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
         let Some(action) = self.subsonic_action(action) else {
             return;
         };
@@ -11077,7 +11088,10 @@ impl App {
                 }
             }
             Action::SnapcastSettings(_) => {}
-            Action::CastingSettings(_) | Action::DiscoverOutputs => {}
+            Action::CastingSettings(_)
+            | Action::DiscoverOutputs
+            | Action::EditCastingSettings { .. }
+            | Action::EditSnapcastSettings { .. } => {}
             Action::LibrarySettings { .. }
             | Action::DownloadTracks(_)
             | Action::ProbeDownloads(_)
@@ -12395,6 +12409,7 @@ impl App {
         #[cfg(target_os = "macos")]
         self.handle_notch_commands();
         self.tick(ctx);
+        self.flush_audio_settings(ctx, Instant::now());
         self.note_listening();
         // MilkDrop runs in a child process and can outlive the main window.
         // Poll it before applying actions because its keys produce actions.
@@ -13505,6 +13520,160 @@ mod tests {
             app.toasts
                 .iter()
                 .any(|toast| toast.message.contains("Snapcast Receive is active"))
+        );
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn audio_settings_auto_apply_coalesces_typing_and_keeps_invalid_fingerprints_unapplied() {
+        let mut app = test_app("audio-settings-auto");
+        app.subsonic = true;
+        let ctx = egui::Context::default();
+        let output = crate::casting::Settings {
+            output: Some(crate::casting::Kind::Chromecast),
+            host: "127.0.0.1".into(),
+            port: 8009,
+            allow_lan: true,
+            certificate_sha256: "a".repeat(64),
+            ..Default::default()
+        };
+        app.subsonic_action(Action::CastingSettings(output.clone()));
+        let mut edited = output.clone();
+        edited.certificate_sha256 = "b".repeat(12);
+        app.apply(
+            Action::EditCastingSettings {
+                settings: edited.clone(),
+                immediate: false,
+            },
+            &ctx,
+        );
+        app.flush_audio_settings(&ctx, Instant::now() + Duration::from_secs(1));
+        app.apply_actions(&ctx);
+        assert_eq!(
+            app.settings.casting, output,
+            "Incomplete pins must keep the current identity/output"
+        );
+        assert!(app.casting_draft.is_some());
+        edited.certificate_sha256 = "b".repeat(64);
+        app.apply(
+            Action::EditCastingSettings {
+                settings: edited.clone(),
+                immediate: false,
+            },
+            &ctx,
+        );
+        app.flush_audio_settings(&ctx, Instant::now() + Duration::from_millis(100));
+        app.apply_actions(&ctx);
+        assert_eq!(
+            app.settings.casting, output,
+            "Typing must not reconnect on each keystroke"
+        );
+        // Flush is independent of whether Settings is still the visible page.
+        app.flush_audio_settings(&ctx, Instant::now() + Duration::from_secs(1));
+        app.apply_actions(&ctx);
+        assert_eq!(app.settings.casting, edited);
+        assert!(app.casting_draft.is_none());
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn output_picker_supersedes_old_drafts_and_local_choice_turns_off_receiving() {
+        let mut app = test_app("audio-settings-picker");
+        app.subsonic = true;
+        let ctx = egui::Context::default();
+        let snapcast = crate::snapcast::Settings {
+            send: true,
+            receive: true,
+            allow_insecure: true,
+            ..Default::default()
+        };
+        app.subsonic_action(Action::SnapcastSettings(Box::new(snapcast.clone())));
+        let mut snapcast_edit = snapcast;
+        snapcast_edit.host = "edited.example.invalid".into();
+        app.apply(
+            Action::EditSnapcastSettings {
+                settings: Box::new(snapcast_edit),
+                immediate: false,
+            },
+            &ctx,
+        );
+        app.apply(
+            Action::EditCastingSettings {
+                settings: crate::casting::Settings {
+                    output: Some(crate::casting::Kind::Chromecast),
+                    host: "old.example.invalid".into(),
+                    port: 8009,
+                    allow_lan: true,
+                    ..Default::default()
+                },
+                immediate: false,
+            },
+            &ctx,
+        );
+        let airplay = crate::casting::Settings {
+            output: Some(crate::casting::Kind::AirPlay),
+            host: "new.example.invalid".into(),
+            port: 5000,
+            allow_lan: true,
+            ..Default::default()
+        };
+        app.subsonic_action(Action::CastingSettings(airplay.clone()));
+        app.flush_audio_settings(&ctx, Instant::now() + Duration::from_secs(1));
+        app.apply_actions(&ctx);
+        assert_eq!(
+            app.settings.casting, airplay,
+            "A stale Snapcast Send draft must not undo a picker choice"
+        );
+        assert!(!app.settings.snapcast.send);
+        assert!(
+            app.settings.snapcast.receive,
+            "Network output and receiving can coexist"
+        );
+        app.subsonic_action(Action::CastingSettings(crate::casting::Settings {
+            output: Some(crate::casting::Kind::Local),
+            ..Default::default()
+        }));
+        assert!(
+            !app.settings.snapcast.receive,
+            "Explicit Local output must be usable immediately"
+        );
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.message.contains("Receive turned off"))
+        );
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn snapcast_switches_apply_immediately_and_receive_only_has_an_explicit_warning() {
+        let mut app = test_app("audio-settings-switches");
+        app.subsonic = true;
+        let ctx = egui::Context::default();
+        app.apply(
+            Action::EditSnapcastSettings {
+                settings: Box::new(crate::snapcast::Settings {
+                    receive: true,
+                    allow_insecure: true,
+                    ..Default::default()
+                }),
+                immediate: true,
+            },
+            &ctx,
+        );
+        assert!(app.settings.snapcast.receive);
+        assert!(app.snapcast_draft.is_none());
+        assert!(!app.settings.snapcast.client_id.is_empty());
+        assert!(
+            app.settings
+                .casting
+                .playback_warning(&app.settings.snapcast)
+                .is_some()
+        );
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.message.contains("Local songs are paused"))
         );
         app.backend.shutdown();
     }

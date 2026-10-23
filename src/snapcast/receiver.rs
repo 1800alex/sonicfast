@@ -91,7 +91,7 @@ async fn supervise(shared: Shared, mut changes: watch::Receiver<Option<Settings>
                 state.status.sender = if !state.targets.is_empty() {
                     "Ready; waiting for playback"
                 } else {
-                    "Source address unavailable; check the hostname and apply again"
+                    "Source address unavailable; check the hostname or reconnect"
                 }
                 .into();
             } else {

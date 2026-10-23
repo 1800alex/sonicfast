@@ -31,6 +31,9 @@ clock drift, emits silence on underruns, and discards stale audio on resync.
 
 Settings are disabled by default and require explicit consent to unencrypted
 transport on a trusted network. Snapcast endpoints contain no credentials.
+Settings changes apply automatically (500 ms idle for typed values). Receive-only
+Local mode displays a warning and pauses the queue. Choosing Local disables
+Receive; other output changes retain the song, position and play/pause intent.
 Receive playback is independent of OpenSubsonic authentication and does not
 report received songs as locally listened/scrobbled tracks. Sender transport
 controls affect the source; receiver group/stream assignment and volume are

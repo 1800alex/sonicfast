@@ -87,7 +87,7 @@ Open Sonicfast, choose **Snapcast audio…** before sign-in or **Settings → Sn
 | Receiver device | Default output |
 | Send music | Off while the synthetic tone is running |
 
-Apply. You should hear a quiet stereo tone. Snapweb is at
+The settings apply automatically. You should hear a quiet stereo tone. Snapweb is at
 <http://127.0.0.1:1781>; it lists the official reference rooms and your built-in
 Sonicfast receiver. Choose the Sonicfast stream and adjust that room's volume.
 The TCP control endpoint is `127.0.0.1:1715`.
@@ -99,7 +99,7 @@ make snapcast-smoke-stop-tone
 ```
 
 Connect Sonicfast to your usual OpenSubsonic server. Set **source port 4993**,
-enable Send and apply, then play music. Also enable Receive if you want this
+enable Send, then play music. Settings apply automatically. Also enable Receive if you want this
 computer to listen through Snapcast; direct local output is replaced while
 sending. The source format is always `44100:16:2`; use a dedicated TCP source port.
 Never run the tone producer and Sonicfast's sender on the same source together.

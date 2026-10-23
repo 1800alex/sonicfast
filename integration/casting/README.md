@@ -23,6 +23,13 @@ restart a finished song when Play is pressed again. A wrong receiver
 certificate pin must fail before playback. The receiver implementation is also
 used by the garage deployment; the public fixture needs no private checkout.
 
+The app proof also changes outputs during metadata loading, during playback and
+while paused. It requires a continuing song/position without another Play action,
+and requires paused music to stay paused. Cast first attempts a wrong certificate
+pin, then corrects it through the normal debounced settings action; the app must
+automatically apply the correction, reconnect and resume. Per-process output is
+saved even when a probe fails.
+
 Each run owns a separate Compose project and volume, cleans up in `finally`,
 and stores captures/reports/logs under ignored `.cache/casting/integration-*`.
 It does not modify the manual Snapcast environment or the garage deployment.

@@ -4,8 +4,15 @@ Date: 2026-10-23. The owner authorized the shared output picker and both senders
 then requested a software Cast target in the garage Docker stack.
 
 Sonicfast keeps its queue, profile, downloads-first lookup and transport controls.
-Output changes retire the previous player, cancel pending loads and restore the
-selected song/position paused. This extends the original casting deferral; a
+Output changes retire the previous player and restore the selected song/position
+with its play/pause intent. An in-flight load is restarted on the new route.
+This supersedes the initial restore-paused behavior at the owner's request.
+Switches/selections apply immediately; endpoint/fingerprint edits apply after
+500 ms without typing, with invalid drafts retained separately from the applied
+configuration. Drafts live at app scope so filtering/navigation cannot strand
+an edit and a newer picker choice cannot be undone by an old settings draft.
+Receive-only Local mode has an explicit warning and pauses the queue. Choosing
+Local explicitly disables Receive; network outputs can coexist with receiving. This extends the original casting deferral; a
 general remote queue coordinator and AirPlay 2 grouping remain deferred.
 
 AirPlay Classic uses the existing PCM normalization/EQ/limiter/tap, then 44.1 kHz

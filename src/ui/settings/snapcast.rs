@@ -5,10 +5,13 @@ use egui::{CornerRadius, Frame, Margin};
 
 pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     let palette = app.palette;
-    let key = egui::Id::new("snapcast-settings-draft");
-    let mut draft = ui
-        .data(|data| data.get_temp::<crate::snapcast::Settings>(key))
+    let mut draft = app
+        .snapcast_draft
+        .as_ref()
+        .map(|(s, _)| s.clone())
         .unwrap_or_else(|| app.settings.snapcast.clone());
+    let before = draft.clone();
+    let mut immediate = false;
     let rows = [
         RowText::new(
             "Send music",
@@ -44,13 +47,13 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         ),
         RowText::new(
             "Receiver identity",
-            "Optional unique room ID. Blank generates an identity when you apply; it is saved for future connections.",
+            "Optional unique room ID. Blank generates and saves an identity when receiving is enabled.",
         ),
         RowText::new("Sender status", app.snapcast_status.sender.clone()),
         RowText::new("Receiver status", app.snapcast_status.receiver.clone()),
         RowText::new(
-            "Apply routing",
-            "Applying pauses local music and restarts the receiver. Press Play to send. To hear your own source in sync, enable both Send and Receive, then select Sonicfast in Snapserver.",
+            "Connection",
+            "Changes apply automatically after a short typing pause. Playing music continues unless Receive takes over Local output. Enable Send and Receive together to hear your own source in sync.",
         ),
     ];
     if !section_matches(needle, "Snapcast", &rows) {
@@ -58,13 +61,19 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     }
     section(ui, &palette, "Snapcast", |ui| {
         filtered_row(ui, &palette, needle, "Snapcast", &rows[0], |ui| {
-            widgets::switch(ui, &palette, "Send music", &mut draft.send);
+            immediate |= widgets::switch(ui, &palette, "Send music", &mut draft.send).changed();
         });
         filtered_row(ui, &palette, needle, "Snapcast", &rows[1], |ui| {
-            widgets::switch(ui, &palette, "Receive audio", &mut draft.receive);
+            immediate |=
+                widgets::switch(ui, &palette, "Receive audio", &mut draft.receive).changed();
         });
+        if let Some(warning) = app.settings.casting.playback_warning(&draft) {
+            super::audio_notice(ui, &palette, warning);
+        }
         filtered_row(ui, &palette, needle, "Snapcast", &rows[2], |ui| {
-            widgets::switch(ui, &palette, "Trusted network", &mut draft.allow_insecure);
+            immediate |=
+                widgets::switch(ui, &palette, "Trusted network", &mut draft.allow_insecure)
+                    .changed();
         });
         filtered_row(ui, &palette, needle, "Snapcast", &rows[3], |ui| {
             field(
@@ -124,6 +133,7 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
                 }
             });
         });
+        immediate |= draft.receiver_device != before.receiver_device;
         filtered_row(ui, &palette, needle, "Snapcast", &rows[7], |ui| {
             slider_value_style(ui.style_mut(), &palette);
             ui.add(
@@ -145,19 +155,27 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         filtered_row(ui, &palette, needle, "Snapcast", &rows[9], |_| {});
         filtered_row(ui, &palette, needle, "Snapcast", &rows[10], |_| {});
         filtered_row(ui, &palette, needle, "Snapcast", &rows[11], |ui| {
-            if theme::soft_button(ui, &palette, None, "Apply / reconnect", false).clicked() {
-                if draft.receive && draft.client_id.is_empty() {
-                    draft.client_id = format!("sonicfast-{:016x}", rand::random::<u64>());
-                }
+            if theme::soft_button(ui, &palette, None, "Reconnect", false).clicked() {
                 app.actions
                     .push(Action::SnapcastSettings(Box::new(draft.clone())));
             }
         });
         if let Err(error) = draft.validate() {
-            theme::subtle(ui, &palette, &error);
+            super::audio_notice(ui, &palette, format!("Not applied: {error}"));
+        } else if draft != app.settings.snapcast {
+            theme::subtle(ui, &palette, "Updating Snapcast automatically…");
         }
     });
-    ui.data_mut(|data| data.insert_temp(key, draft));
+    if draft != before {
+        if !draft.allow_insecure && before.allow_insecure {
+            draft.send = false;
+            draft.receive = false;
+        }
+        app.actions.push(Action::EditSnapcastSettings {
+            settings: Box::new(draft),
+            immediate,
+        });
+    }
     true
 }
 fn field(

@@ -239,6 +239,17 @@ fn setting_slider<N: egui::emath::Numeric>(
 pub(crate) fn clear_search(ctx: &egui::Context) {
     ctx.data_mut(|data| data.remove::<String>(egui::Id::new(SETTINGS_FILTER_ID)));
 }
+fn audio_notice(ui: &mut egui::Ui, palette: &Palette, text: impl Into<String>) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text.into())
+                .font(theme::regular(13.0))
+                .color(palette.warning),
+        )
+        .wrap(),
+    );
+}
+
 const PROXY_DIRTY_ID: &str = "proxy-settings-dirty";
 
 /// A frame-rate dial: 30, 60, the screen's rate once known, the current rate

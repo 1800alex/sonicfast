@@ -1110,6 +1110,14 @@ pub enum Action {
     ToggleSaved(String),
     SnapcastSettings(Box<crate::snapcast::Settings>),
     CastingSettings(crate::casting::Settings),
+    EditCastingSettings {
+        settings: crate::casting::Settings,
+        immediate: bool,
+    },
+    EditSnapcastSettings {
+        settings: Box<crate::snapcast::Settings>,
+        immediate: bool,
+    },
     DiscoverOutputs,
     LibrarySettings {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,

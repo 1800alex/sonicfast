@@ -68,6 +68,11 @@ are application-wide, separate from saved OpenSubsonic connections.
 The [casting guide]({{ '/casting/' | relative_url }}) describes the player output
 picker and manual receiver settings. Receiver identity pins are public certificate
 fingerprints; temporary media bearer paths are kept in memory, never in settings.
+Casting and Snapcast switches/selections apply immediately; typed edits apply
+after 500 ms without typing. Invalid or incomplete fields display **Not applied**
+and retain the last working configuration. Output changes keep the current
+song, position and play/pause intent. Choosing Local turns off Snapcast Receive;
+receive-only mode warns that the Local queue is paused.
 
 ## Stored data
 

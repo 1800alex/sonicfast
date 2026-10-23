@@ -68,9 +68,15 @@ impl eframe::App for Review {
                     }
                     2 => {
                         self.app.show_devices = false;
+                        // View-state fixture only; do not start a network receiver.
+                        self.app.settings.snapcast.receive = true;
+                        self.app.settings.snapcast.allow_insecure = true;
                         ctx.data_mut(|d| {
                             d.insert_temp(egui::Id::new("casting-unused"), false);
-                            d.insert_temp(egui::Id::new("settings-filter"), "Casting".to_string());
+                            d.insert_temp(
+                                egui::Id::new("settings-filter"),
+                                "Receive audio".to_string(),
+                            );
                         });
                         self.app.actions.push(Action::Open(Page::Settings));
                     }

@@ -91,3 +91,46 @@ This confirms hardware handshake/transport progress, not audible speaker output.
 The user's normal music playback still needs a listening retry. This extends the
 earlier software-only evidence without adding Google Cast hardware or other OS
 claims. Diagnostic logs remain in ignored `.cache/airplay-receiver/`.
+
+## Automatic settings and playback handoff (2026-10-23)
+
+The owner reported an extra pause/play step after changing outputs, hidden
+receive-only conflicts and settings that silently needed Apply. The original
+restore-paused policy and independent egui Snapcast draft caused those UX gaps.
+
+Casting and Snapcast now share application-scoped pending edits. Switches and
+selections apply immediately; text/number edits apply after 500 ms of inactivity.
+Incomplete fingerprints/endpoints stay pending with a visible warning and retain
+the applied configuration. Filtering, navigation and picker changes cannot leave
+an old draft that later re-enables sending. Reconnect remains an explicit retry,
+not a prerequisite for applying settings. Notices wrap and appear near the
+receive/output controls so narrow layouts do not hide the conflict explanation.
+
+The backend retires the old output, restores its heard position and resumes only
+when the user's play intent is active. Paused songs stay paused. An in-flight
+metadata load is restarted on the new route instead of discarded. Output errors
+retain play intent, allowing a corrected Cast fingerprint to reconnect and play
+automatically. Explicit pause, natural completion and receive-only takeover clear
+that intent. Local song loads are guarded at the backend as well as the UI.
+
+Receive-only Local mode has a persistent warning. Explicitly choosing Local
+disables Receive and shows a notice. AirPlay/Cast can still coexist with the
+independent receiver, with a notice explaining the additional local audio.
+This preserves synchronized Send+Receive use without an unexplained NoDevice.
+
+Regression coverage includes incomplete/valid fingerprint edits, debounce across
+navigation, newer picker choices superseding drafts, immediate switches and
+receive-only warnings. The actual Docker app proofs exercise loading/playing/
+paused output changes for AirPlay, Cast and Snapcast. The Cast proof additionally
+starts with a wrong pin and corrects it through the automatic settings path,
+without a Play action, before testing transport controls and replay. Synthetic
+audio/certificates are used; this follow-up sends no audio to physical receivers.
+Native dark/light and narrow-window settings captures stay in ignored cache.
+
+Validation passed on Linux: `make verify` (1396 default-feature and 1436
+all-feature library tests, with existing opt-in tests ignored),
+`make casting-test`, PCM/FLAC `make snapcast-test`, the default native app build,
+and the production documentation build/link check. The installed stable Rust
+override was used. The first extended Cast harness relied on a per-player
+generation counter across player replacement; its check now observes resumed
+playback progress, which also works after fingerprint-error recovery.

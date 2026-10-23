@@ -9,10 +9,11 @@ Open the speaker button in the bottom player bar to choose **Local**, a nearby
 Choose **Find receivers** to scan again. Discovery does not send audio.
 
 Enable **Allow LAN casting** before selecting a network receiver. Choosing an
-output preserves the song and position paused; press Play to continue. Use one
-output at a time. The independent Snapcast receiver can still receive audio.
-If Snapcast Receive is the only local route, enable Send too or choose another
-output before playing your own queue.
+output reconnects automatically at the current song position: playing music
+continues and paused music stays paused. A song still loading is preserved too.
+Use one output at a time. Choosing Local turns off Snapcast Receive so your own
+queue can play. AirPlay/Cast and the independent Snapcast receiver can coexist;
+the output picker and settings show a notice when receiving is also enabled.
 
 ## AirPlay Classic
 
@@ -52,11 +53,16 @@ does not silently switch to local speakers.
 
 Use **Settings → Casting** to enter an IP/hostname and port manually. AirPlay
 normally uses 5000; Cast normally uses 8009. Snapcast's server/source settings
-remain in its own section.
+remain in its own section. Changes apply automatically: switches and selections
+apply immediately, while text/number edits apply after a short typing pause.
+Incomplete or invalid fields show **Not applied** and keep the last working
+configuration. You can leave Settings while a valid edit is waiting to apply.
+Use **Reconnect** only to retry an existing configuration.
 
 **Receiver certificate** is blank for genuine Google Cast devices, which use
 Google's device-authentication chain. For an owner-operated software receiver,
-copy its SHA-256 TLS certificate fingerprint into this field before applying.
+copy its complete SHA-256 TLS certificate fingerprint into this field. The valid
+fingerprint takes effect automatically after the typing pause.
 Obtain it directly from the receiver host, not an untrusted discovery message.
 The pin verifies that receiver's TLS key; it does not turn it into a certified
 Chromecast. Other casting apps may reject such software receivers.

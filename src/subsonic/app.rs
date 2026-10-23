@@ -1,6 +1,31 @@
 use super::*;
 use crate::subsonic::{Event as S, QueueAction, Request};
 impl App {
+    pub(crate) fn flush_audio_settings(&mut self, ctx: &egui::Context, now: std::time::Instant) {
+        let delay = std::time::Duration::from_millis(500);
+        if let Some((settings, at)) = &self.casting_draft
+            && settings
+                .validate_with_snapcast(&self.settings.snapcast)
+                .is_ok()
+        {
+            if now.saturating_duration_since(*at) >= delay {
+                self.actions.push(Action::CastingSettings(settings.clone()));
+            } else {
+                ctx.request_repaint_after(delay.saturating_sub(now.saturating_duration_since(*at)));
+            }
+        }
+        if let Some((settings, at)) = &self.snapcast_draft
+            && settings.validate().is_ok()
+        {
+            if now.saturating_duration_since(*at) >= delay {
+                self.actions
+                    .push(Action::SnapcastSettings(Box::new(settings.clone())));
+            } else {
+                ctx.request_repaint_after(delay.saturating_sub(now.saturating_duration_since(*at)));
+            }
+        }
+    }
+
     pub(crate) fn begin_server_connection(&mut self) {
         self.handle_auth(AuthStatus::SignedOut);
         self.server_form.active = None;
@@ -284,22 +309,54 @@ impl App {
                 self.casting_scanning = true;
                 Request::DiscoverOutputs
             }
+            Action::EditCastingSettings {
+                settings,
+                immediate,
+            } => {
+                self.casting_draft = Some((settings.clone(), std::time::Instant::now()));
+                if immediate
+                    && settings
+                        .validate_with_snapcast(&self.settings.snapcast)
+                        .is_ok()
+                {
+                    return self.subsonic_action(Action::CastingSettings(settings));
+                }
+                return None;
+            }
+            Action::EditSnapcastSettings {
+                settings,
+                immediate,
+            } => {
+                self.snapcast_draft = Some((*settings.clone(), std::time::Instant::now()));
+                if immediate && settings.validate().is_ok() {
+                    return self.subsonic_action(Action::SnapcastSettings(settings));
+                }
+                return None;
+            }
             Action::CastingSettings(settings) => {
-                if let Err(error) = settings.validate() {
+                if let Err(error) = settings.validate_with_snapcast(&self.settings.snapcast) {
                     self.toast_error(&error);
                     return None;
                 }
-                if settings.output == Some(crate::casting::Kind::Snapcast)
-                    && !self.settings.snapcast.allow_insecure
+                self.casting_draft = None;
+                if settings.output == Some(crate::casting::Kind::Local)
+                    && self.settings.snapcast.receive
                 {
-                    self.toast_error("Configure and allow Snapcast in Settings first");
-                    return None;
+                    self.settings.snapcast.receive = false;
+                    self.toast("Snapcast Receive turned off for Local playback");
                 }
                 self.settings.snapcast.send =
                     settings.output == Some(crate::casting::Kind::Snapcast);
+                if let Some((draft, _)) = &mut self.snapcast_draft {
+                    draft.send = self.settings.snapcast.send;
+                    draft.receive = self.settings.snapcast.receive;
+                }
                 self.settings.casting = settings.clone();
                 self.mark_settings_dirty();
-                Request::Casting(settings)
+                Request::Route {
+                    output: settings,
+                    snapcast: self.settings.snapcast.clone(),
+                }
             }
             Action::SnapcastSettings(mut settings) => {
                 if let Err(error) = settings.validate() {
@@ -309,11 +366,19 @@ impl App {
                 if settings.receive && settings.client_id.is_empty() {
                     settings.client_id = format!("sonicfast-{:016x}", rand::random::<u64>());
                 }
+                self.snapcast_draft = None;
+                let old_output = self.settings.casting.kind(self.settings.snapcast.send);
                 self.settings.snapcast = *settings.clone();
                 if settings.send {
                     self.settings.casting.output = Some(crate::casting::Kind::Snapcast);
                 } else if self.settings.casting.output == Some(crate::casting::Kind::Snapcast) {
                     self.settings.casting.output = Some(crate::casting::Kind::Local);
+                }
+                if self.settings.casting.kind(settings.send) != old_output {
+                    self.casting_draft = None;
+                }
+                if let Some(warning) = self.settings.casting.playback_warning(&settings) {
+                    self.toast(warning);
                 }
                 self.mark_settings_dirty();
                 Request::Snapcast(*settings)

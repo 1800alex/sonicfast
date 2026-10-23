@@ -250,6 +250,9 @@ pub async fn run(
     let mut removing_profiles = std::collections::HashSet::new();
     let mut client: Option<Arc<Client>> = None;
     let mut player: Option<Player> = None;
+    // Output errors do not erase the user's intent to play. A corrected route
+    // retries automatically; an explicit pause or receive-only takeover clears it.
+    let mut play_intent = false;
     let mut updates: Option<tokio::sync::watch::Receiver<l::playback::PlaybackState>> = None;
     let mut selected: Option<Profile> = None;
     let mut queue = Queue::default();
@@ -467,22 +470,26 @@ pub async fn run(
                         }
                         emit(&tx, &wake, E::Subsonic(super::Event::Profiles(profiles.clone())));
                     }
-                    b::Command::Subsonic(request @ (Request::Snapcast(_) | Request::Casting(_))) => {
+                    b::Command::Subsonic(request @ (Request::Snapcast(_) | Request::Casting(_) | Request::Route { .. })) => {
                         let mut settings=snapcast.shared.settings();
                         let mut output=casting.settings();
                         match request {
                             Request::Snapcast(new)=>{settings=new;if settings.send{output.output=Some(crate::casting::Kind::Snapcast);}else if output.output==Some(crate::casting::Kind::Snapcast){output.output=Some(crate::casting::Kind::Local);}},
                             Request::Casting(new)=>{output=new;settings.send=output.output==Some(crate::casting::Kind::Snapcast);},
+                            Request::Route { output: new, snapcast: new_snapcast } => { output = new; settings = new_snapcast; },
                             _=>unreachable!(),
                         }
                         if let Err(error)=output.validate(){emit(&tx,&wake,E::Error(error));continue;}
                         if let Err(error) = settings.validate() { emit(&tx, &wake, E::Error(error)); continue; }
                         serial += 1;
-                        pending_spec = None;
+                        let pending = pending_spec.take();
                         if let Some(fetch) = play_fetch.take() { fetch.abort(); }
-                        // Retire the old feeder before changing destinations. Keep
-                        // the queue/position, but require explicit Play afterwards.
+                        // Retire the old feeder before changing destinations, then
+                        // restore the heard position and the user's play/pause intent.
                         let state = player.as_ref().map(Player::snapshot);
+                        let warning = output.playback_warning(&settings);
+                        let resume = warning.is_none() && play_intent;
+                        if warning.is_some() { play_intent = false; }
                         if let Some(old) = player.take() { old.shutdown().await.ok(); }
                         updates = None;
                         if settings!=snapcast.shared.settings(){let _ = snapcast.configure(settings);}
@@ -490,10 +497,12 @@ pub async fn run(
                         if let Some(client) = &client {
                             match make_player(client.clone(), &config, local_library.clone(), snapcast.shared.clone(), casting.clone()) {
                                 Ok(p) => {
-                                    if let (Some(track), Some(state)) = (queue.current(), state) {
+                                    if pending.is_none() && let (Some(track), Some(state)) = (queue.current(), state) {
                                         let _ = p.load(track.id.clone(), false);
                                         let _ = p.seek(state.position_ms);
+                                        if resume { let _ = p.play(); }
                                     }
+                                    emit(&tx, &wake, E::Local(Box::new(local(&queue, &p.snapshot(), selected.as_ref().map_or("", |p| &p.username)))));
                                     last_end = None;
                                     updates = Some(p.subscribe());
                                     player = Some(p);
@@ -501,7 +510,18 @@ pub async fn run(
                                 Err(error) => emit(&tx, &wake, E::Error(error)),
                             }
                         }
+                        if let Some(mut spec) = pending && let Some(client) = &client {
+                            spec.play &= warning.is_none();
+                            let request = serial; let token = generation; let client = client.clone();
+                            play_intent = spec.play;
+                            pending_spec = Some(spec.clone());
+                            play_fetch = Some(tasks.spawn(async move {
+                                let result = resolve(&client, &spec).await;
+                                (token, Ok(Outcome::Load(request, spec, result)))
+                            }));
+                        }
                         listening.suspend();
+                        dirty = true;
                         emit(&tx, &wake, E::Subsonic(super::Event::Snapcast(snapcast.shared.status())));
                     }
                     b::Command::Subsonic(Request::DiscoverOutputs)=>{
@@ -614,6 +634,10 @@ pub async fn run(
                         }
                     }
                     b::Command::Subsonic(Request::Load(spec)) | b::Command::Player(P::Load(spec)) => {
+                        if let Some(warning) = casting.settings().playback_warning(&snapcast.shared.settings()) {
+                            emit(&tx, &wake, E::Error(warning.into()));
+                            continue;
+                        }
                         if let Some(client) = &client {
                             serial += 1;
                             let request = serial;
@@ -622,6 +646,7 @@ pub async fn run(
                             if let Some(old) = play_fetch.take() {
                                 old.abort();
                             }
+                            play_intent = spec.play;
                             pending_spec = Some(spec.clone());
                             if let Some(player) = &player {
                                 player.stop();
@@ -633,6 +658,10 @@ pub async fn run(
                         }
                     }
                     b::Command::Subsonic(Request::Queue(action)) => {
+                        if matches!(action, QueueAction::Skip(_)) && let Some(warning) = casting.settings().playback_warning(&snapcast.shared.settings()) {
+                            emit(&tx, &wake, E::Error(warning.into()));
+                            continue;
+                        }
                         match action {
                             QueueAction::Add(ref uris) | QueueAction::Insert(_, ref uris)
                                 if !uris.is_empty() =>
@@ -668,6 +697,7 @@ pub async fn run(
                                     && let Some(p) = &player
                                 {
                                     listening.start(track.id.clone(),unix_ms());
+                                    play_intent = true;
                                     let _ = p.load(track.id, true);
                                 }
                             }
@@ -678,8 +708,8 @@ pub async fn run(
                     }
                     b::Command::Player(command) | b::Command::Subsonic(Request::Transport(command)) => {
                         let route = snapcast.shared.settings();
-                        if route.receive && casting.settings().kind(route.send)==crate::casting::Kind::Local && matches!(command, P::Toggle | P::Next | P::Previous) {
-                            emit(&tx, &wake, E::Error("Snapcast Receive is active. Enable Send as well, or disable Receive, before playing local songs.".into()));
+                        if matches!(command, P::Toggle | P::Next | P::Previous) && let Some(warning) = casting.settings().playback_warning(&route) {
+                            emit(&tx, &wake, E::Error(warning.into()));
                             continue;
                         }
                         if let Some(p) = &player {
@@ -694,6 +724,7 @@ pub async fn run(
                                 match command {
                                     P::Toggle => {
                                         spec.play = !spec.play;
+                                        play_intent = spec.play;
                                         continue;
                                     }
                                     P::Seek(ms) => {
@@ -709,8 +740,10 @@ pub async fn run(
                                         p.snapshot().phase,
                                         Phase::Playing | Phase::Loading | Phase::Buffering | Phase::Seeking
                                     ) {
+                                        play_intent = false;
                                         p.pause();
                                     } else {
+                                        play_intent = true;
                                         let _ = p.play();
                                     }
                                     None
@@ -719,6 +752,7 @@ pub async fn run(
                                     serial += 1;
                                     let next = queue.advance(false);
                                     if next.is_none() {
+                                        play_intent = false;
                                         p.stop();
                                     }
                                     next
@@ -764,6 +798,7 @@ pub async fn run(
                             };
                             if let Some(track) = track {
                                 listening.start(track.id.clone(),unix_ms());
+                                    play_intent = true;
                                     let _ = p.load(track.id, true);
                             }
                             emit(
@@ -1000,6 +1035,7 @@ pub async fn run(
                         let (tracks, source) = match result {
                             Ok(result) => result,
                             Err(error) => {
+                                play_intent = false;
                                 emit(&tx, &wake, E::Error(error));
                                 continue;
                             }
@@ -1016,6 +1052,7 @@ pub async fn run(
                             })
                             .unwrap_or_else(|| tracks.iter().position(|t| t.as_ref().is_some_and(playable)).unwrap_or(0));
                         if tracks.get(at).and_then(Option::as_ref).is_none_or(|t| !playable(t)) {
+                            play_intent = false;
                             emit(
                                 &tx,
                                 &wake,
@@ -1049,6 +1086,7 @@ pub async fn run(
                         ) && let Some(p) = &player
                         {
                             listening.start(track.id.clone(),unix_ms());
+                            play_intent = spec.play;
                             let _ = p.load(track.id, spec.play);
                             if spec.position_ms > 0 {
                                 let _ = p.seek(u64::from(spec.position_ms));
@@ -1093,8 +1131,10 @@ pub async fn run(
                     last_listening=Instant::now();
                     if state.phase == Phase::Ended && last_end != Some(state.generation) {
                         last_end = Some(state.generation);
+                        play_intent = false;
                         if let Some(track) = queue.advance(true) {
                             listening.start(track.id.clone(),unix_ms());
+                                    play_intent = true;
                                     let _ = p.load(track.id, true);
                         }
                         emit(&tx, &wake, queue_event(&queue, &source_positions));

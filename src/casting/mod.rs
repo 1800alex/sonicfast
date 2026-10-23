@@ -49,6 +49,22 @@ impl Settings {
             Kind::Local
         })
     }
+    pub fn playback_warning(&self, snapcast: &crate::snapcast::Settings) -> Option<&'static str> {
+        (snapcast.receive && self.kind(snapcast.send) == Kind::Local).then_some(
+            "Snapcast Receive is active. Local songs are paused; enable Send as well, turn off Receive, or choose another output to play your queue.")
+    }
+    pub fn validate_with_snapcast(
+        &self,
+        snapcast: &crate::snapcast::Settings,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if self.kind(snapcast.send) == Kind::Snapcast {
+            let mut sending = snapcast.clone();
+            sending.send = true;
+            sending.validate()?;
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         if !matches!(self.output, Some(Kind::AirPlay | Kind::Chromecast)) {
             return Ok(());
@@ -143,9 +159,9 @@ impl Shared {
             Some(Kind::AirPlay | Kind::Chromecast)
         ) && state.targets.is_empty()
         {
-            "Receiver address unavailable; apply again"
+            "Receiver address unavailable; check the address or reconnect"
         } else {
-            "Ready; press Play"
+            "Ready"
         }
         .into();
         Ok(())

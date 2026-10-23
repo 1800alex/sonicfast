@@ -55,6 +55,11 @@ def main():
     fixture = folder / "compose.json"
     fixture.write_text(json.dumps({"services": services, "volumes": {"pulse-runtime": {},"cast-state":{}}}))
     command = compose + ["-p", project, "-f", str(fixture)]
+    def run_probe(tag, *args, **kwargs):
+        result = subprocess.run(args, capture_output=True, **kwargs)
+        (folder / (tag + "-process.log")).write_bytes(result.stdout + result.stderr)
+        result.check_returncode()
+        return result.stdout
     recorder = None
     try:
         run(*command, "up", "-d", "--wait")
@@ -63,7 +68,7 @@ def main():
             recorder = subprocess.Popen(command + ["exec", "-T", "--user", "1000:1000", "pulse", "timeout", "14", "parec",
                                                    "--server=unix:/run/pulse/native", "--device=casting_test.monitor", "--format=float32le", "--rate=44100", "--channels=2"],
                                         stdout=audio, stderr=subprocess.PIPE)
-            probe = run(str(ROOT / "target/debug/examples/casting_probe"), str(port), timeout=25)
+            probe = run_probe("native", str(ROOT / "target/debug/examples/casting_probe"), str(port), timeout=25)
             (folder / "probe.log").write_bytes(probe)
             _, errors = recorder.communicate(timeout=20)
             if recorder.returncode not in (0, 124):
@@ -91,9 +96,10 @@ def main():
         capture=folder/"app-airplay-output.f32"
         with capture.open("wb") as audio:
             recorder=subprocess.Popen(command+["exec","-T","--user","1000:1000","pulse","timeout","10","parec","--server=unix:/run/pulse/native","--device=casting_test.monitor","--format=float32le","--rate=44100","--channels=2"],stdout=audio,stderr=subprocess.PIPE)
-            proof=run(str(ROOT/"target/debug/examples/snapcast_probe"),"app-airplay","--music-url",f"http://127.0.0.1:{music_port}","--port",str(port),timeout=25)
+            proof=run_probe("app-airplay", str(ROOT/"target/debug/examples/snapcast_probe"),"app-airplay","--music-url",f"http://127.0.0.1:{music_port}","--port",str(port),timeout=25)
             (folder/"app-airplay-probe.log").write_bytes(proof)
             assert b'"cast_controls_exercised":true' in proof,"AirPlay transport proof did not run"
+            assert b'"output_auto_resumed":true' in proof and b'"paused_output_stayed_paused":true' in proof and b'"load_survived_output_change":true' in proof,"AirPlay output transition proof did not run"
             _,errors=recorder.communicate(timeout=15)
             assert recorder.returncode in (0,124),errors
         pcm=array.array("f");pcm.frombytes(capture.read_bytes())
@@ -106,10 +112,12 @@ def main():
         capture=folder/"cast-output.f32"
         with capture.open("wb") as audio:
             recorder=subprocess.Popen(command+["exec","-T","--user","1000:1000","pulse","timeout","10","parec","--server=unix:/run/pulse/native","--device=casting_test.monitor","--format=float32le","--rate=44100","--channels=2"],stdout=audio,stderr=subprocess.PIPE)
-            proof=run(*cast_probe,fingerprint,timeout=25)
+            proof=run_probe("app-cast", *cast_probe,fingerprint,timeout=25)
             (folder/"cast-probe.log").write_bytes(proof)
             assert b'"cast_controls_exercised":true' in proof,"Cast pause/seek/resume proof did not run"
             assert b'"cast_replayed":true' in proof,"Finished Cast song did not restart"
+            assert b'"fingerprint_auto_recovered":true' in proof,"Corrected fingerprint did not auto-apply and restart playback"
+            assert b'"output_auto_resumed":true' in proof and b'"paused_output_stayed_paused":true' in proof and b'"load_survived_output_change":true' in proof,"Cast output transition proof did not run"
             _,errors=recorder.communicate(timeout=15)
             assert recorder.returncode in (0,124),errors
         pcm=array.array("f");pcm.frombytes(capture.read_bytes())

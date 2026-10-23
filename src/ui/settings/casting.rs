@@ -7,16 +7,16 @@ use crate::{
     ui::widgets,
 };
 pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
-    let key = egui::Id::new("casting-draft");
-    let (saved, mut draft) = ui
-        .data(|d| d.get_temp::<(Settings, Settings)>(key))
-        .unwrap_or_else(|| (app.settings.casting.clone(), app.settings.casting.clone()));
-    if saved != app.settings.casting {
-        draft = app.settings.casting.clone();
-    }
+    let mut draft = app
+        .casting_draft
+        .as_ref()
+        .map(|(s, _)| s.clone())
+        .unwrap_or_else(|| app.settings.casting.clone());
     if draft.port == 0 {
         draft.port = 5000;
     }
+    let before = draft.clone();
+    let mut immediate = false;
     let rows = [
         RowText::new(
             "Output",
@@ -40,8 +40,8 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         ),
         RowText::new("Playback status", app.casting_status.clone()),
         RowText::new(
-            "Apply output",
-            "Changes stop the old output and preserve the song and position paused. Press Play to continue.",
+            "Connection",
+            "Changes apply automatically after a short typing pause. Playing music continues on the new output; paused music stays paused.",
         ),
     ];
     if !section_matches(needle, "Casting", &rows) {
@@ -49,6 +49,7 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     }
     let palette = app.palette;
     section(ui, &palette, "Casting", |ui| {
+        receiving_warning(app, ui);
         filtered_row(ui, &palette, needle, "Casting", &rows[0], |ui| {
             let before = draft.kind(app.settings.snapcast.send);
             let mut kind = before;
@@ -60,12 +61,23 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
                     }
                 });
             if before != kind {
+                immediate = true;
                 draft.output = Some(kind);
                 draft.port = if kind == Kind::AirPlay { 5000 } else { 8009 };
             }
         });
         filtered_row(ui, &palette, needle, "Casting", &rows[1], |ui| {
-            widgets::switch(ui, &palette, "Allow LAN casting", &mut draft.allow_lan);
+            if widgets::switch(ui, &palette, "Allow LAN casting", &mut draft.allow_lan).changed() {
+                immediate = true;
+                if !draft.allow_lan
+                    && matches!(
+                        draft.kind(app.settings.snapcast.send),
+                        Kind::AirPlay | Kind::Chromecast
+                    )
+                {
+                    draft.output = Some(Kind::Local);
+                }
+            }
         });
         filtered_row(ui, &palette, needle, "Casting", &rows[2], |ui| {
             egui::Frame::new()
@@ -104,9 +116,10 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         });
         filtered_row(ui, &palette, needle, "Casting", &rows[5], |_| {});
         filtered_row(ui, &palette, needle, "Casting", &rows[6], |ui| {
-            if theme::soft_button(ui, &palette, None, "Apply output", false).clicked() {
-                draft.output = Some(draft.kind(app.settings.snapcast.send));
-                app.actions.push(Action::CastingSettings(draft.clone()));
+            if theme::soft_button(ui, &palette, None, "Reconnect", false).clicked() {
+                let mut settings = draft.clone();
+                settings.output = Some(settings.kind(app.settings.snapcast.send));
+                app.actions.push(Action::CastingSettings(settings));
             }
         });
         if draft.kind(app.settings.snapcast.send) == Kind::Chromecast {
@@ -116,11 +129,19 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
                 "Chromecast decodes the original file. EQ and visualization apply to Local, AirPlay and Snapcast outputs. Allow the app’s media listener through your LAN firewall.",
             );
         }
-        if let Err(error) = draft.validate() {
-            theme::subtle(ui, &palette, &error);
+        if let Err(error) = draft.validate_with_snapcast(&app.settings.snapcast) {
+            super::audio_notice(ui, &palette, format!("Not applied: {error}"));
+        } else if app.casting_draft.is_some() || draft != before {
+            theme::subtle(ui, &palette, "Updating output automatically…");
         }
     });
-    ui.data_mut(|d| d.insert_temp(key, (app.settings.casting.clone(), draft)));
+    if draft != before {
+        draft.output = Some(draft.kind(app.settings.snapcast.send));
+        app.actions.push(Action::EditCastingSettings {
+            settings: draft,
+            immediate,
+        });
+    }
     true
 }
 pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
@@ -147,6 +168,7 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
         .show(ctx, |ui| {
             let palette = app.palette;
             let active = app.settings.casting.kind(app.settings.snapcast.send);
+            receiving_warning(app, ui);
             for kind in [Kind::Local, Kind::Snapcast] {
                 if theme::soft_button(ui, &palette, None, kind.label(), active == kind).clicked() {
                     let mut s = app.settings.casting.clone();
@@ -229,4 +251,12 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
 }
 fn open_settings(app: &mut App) {
     app.show_devices = false;
+}
+
+fn receiving_warning(app: &App, ui: &mut egui::Ui) {
+    if app.settings.snapcast.receive {
+        let text = app.settings.casting.playback_warning(&app.settings.snapcast).unwrap_or(
+            "Snapcast Receive is also enabled and plays through this computer's receiver device. Turn it off in Settings to listen only on the selected output.");
+        super::audio_notice(ui, &app.palette, text);
+    }
 }

@@ -21,6 +21,10 @@ pub enum Request {
     Sync,
     Snapcast(crate::snapcast::Settings),
     Casting(crate::casting::Settings),
+    Route {
+        output: crate::casting::Settings,
+        snapcast: crate::snapcast::Settings,
+    },
     DiscoverOutputs,
     Configure {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
