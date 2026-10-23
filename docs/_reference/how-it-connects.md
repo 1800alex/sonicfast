@@ -31,8 +31,9 @@ to a separate Snapserver. Its built-in receiver uses Snapcast clock/chunk timest
 and the native audio backend; no external client is launched. Music-server
 authentication and the local song queue remain separate.
 
-The output picker also supports [AirPlay Classic and Cast]({{ '/casting/' | relative_url }}).
-AirPlay receives the processed PCM as lossless audio. Cast receivers fetch the
+The output picker also supports [AirPlay and Cast]({{ '/casting/' | relative_url }}).
+AirPlay receives the processed PCM as lossless audio; newer PIN-paired receivers
+use verified identity and encrypted control/audio. Cast receivers fetch the
 selected original through a temporary, receiver-restricted local media listener,
 so receiver codec support applies and local EQ/visualization do not. Sonicfast
 keeps the queue and follows receiver playback status for progress and song end.

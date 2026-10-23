@@ -208,6 +208,7 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
                 host: "127.0.0.1".into(),
                 port,
                 name: "Docker Cast fixture".into(),
+                airplay2: false,
                 allow_lan: true,
                 certificate_sha256: if recover_pin {
                     "0".repeat(64)

@@ -24,6 +24,10 @@ the shared output picker and explicitly certificate-pinned software Cast targets
 Run `make casting-test` for AirPlay changes; retain device-authentication and
 temporary-media-lease tests for Cast changes. Do not claim Google SDK or physical
 device compatibility from a software receiver test.
+ADR 013 extends AirPlay to native HomeKit-style PIN pairing and single-receiver
+encrypted audio, including Roku discovery. Keep pairing keys in protected storage,
+reject stale/cancelled pairing results, verify both pairing proofs and receiver
+signatures, and retain the independent encrypted receiver/negative Docker tests.
 Run `sonicfast` for OpenSubsonic; `sonicfast-legacy` is the retained Spotify/demo comparison binary.
 This intentional OpenSubsonic fork of Spotifast supersedes inherited Spotify-only policy.
 Application/crate/packaging branding is Sonicfast. Preserve upstream attribution, real

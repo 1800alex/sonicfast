@@ -45,6 +45,23 @@ Genuine Chromecast hardware and Google SDK sender interoperability require a
 separate device test. The garage's certificate-pinned software receiver is an
 owner-operated Cast-compatible target, not a Google-authenticated Chromecast.
 
+The suite also starts independent synthetic HAP receivers implemented with
+Python integers/hashlib and distribution `cryptography`. A leading-zero PIN
+completes SRP/Ed25519 pairing, and two native audio sessions verify the saved
+receiver identity without pairing again. Captured ChaCha20-Poly1305 PCM must
+contain the expected 660 Hz tone. The fixture checks encrypted event replies,
+NTP, feedback, exact encrypted retransmissions and teardown. Incorrect PINs,
+forged server SRP proofs, forged setup signatures and forged session signatures
+must fail before any audio is sent. These targets do not implement AirPlay
+grouping and are not substitutes for physical compatibility testing.
+
+`airplay_pair_probe discover` lists the actual discovery results without
+connecting. `airplay_pair_probe HOST PORT --silence` explicitly requests an
+on-screen code, reads it from stdin, and sends ten seconds of silence to that
+receiver. Pairing keys live only in this probe's memory and are never printed or
+saved. Omitting `--silence` sends a quiet 660 Hz test tone. `--reconnect` closes
+and reopens the audio session halfway through, reusing its verified pairing.
+
 For an explicitly selected receiver, `casting_probe PORT HOST --silence` sends
 ten seconds of silent audio through the actual sender. This checks handshake,
 keepalive, sending and teardown without an audible tone. It does not establish

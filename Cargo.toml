@@ -193,6 +193,12 @@ hmac = "0.12"
 pbkdf2 = "0.12"
 aes = "0.8"
 ctr = "0.9"
+# Native AirPlay PIN pairing (SRP-3072) and binary-plist stream negotiation.
+# Big integers/subtle already occur in the retained dependency tree; ring owns
+# X25519, Ed25519, HKDF and authenticated encryption.
+num-bigint = "0.4"
+subtle = "2"
+plist = { version = "1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The packaged Dock artwork also identifies unbundled Cargo runs.

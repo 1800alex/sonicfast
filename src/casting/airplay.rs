@@ -1,6 +1,10 @@
-//! Classic, unencrypted RAOP with 44.1 kHz stereo ALAC, RTP timing and resends.
+//! Classic ALAC/RAOP and PIN-paired encrypted PCM, with RTP timing and resends.
 //! Packet layouts follow <https://nto.github.io/AirPlay.html>; no receiver code is linked.
 use super::Shared;
+mod crypto;
+mod modern;
+pub mod pairing;
+mod wire;
 use crate::{eq::SharedEq, sink::PcmOutput, vis::AudioTap};
 use libresonic::playback::{AudioOutput, Cancellation, OutputError, PcmBlock};
 use std::{
@@ -38,8 +42,10 @@ impl Sender {
         if self.session.is_none() {
             self.shared.report("Connecting to AirPlay receiver");
             self.session = Some(Session::connect(&self.shared, cancel).inspect_err(|_| {
-                self.shared
-                    .report("AirPlay handshake failed; check the receiver and network")
+                if self.shared.status() == "Connecting to AirPlay receiver" {
+                    self.shared
+                        .report("AirPlay handshake failed; check the receiver and network");
+                }
             })?);
         }
         self.pending.extend_from_slice(samples);
@@ -114,11 +120,17 @@ impl AudioOutput for Sender {
     fn stop(&mut self) {
         self.close();
         self.processing.stop();
-        self.shared.report("AirPlay stopped");
+        if matches!(
+            self.shared.status().as_str(),
+            "Sending AirPlay audio" | "AirPlay paused" | "Connecting to AirPlay receiver"
+        ) {
+            self.shared.report("AirPlay stopped");
+        }
     }
 }
 struct Session {
-    tcp: TcpStream,
+    tcp: wire::Wire,
+    modern: Option<modern::Transport>,
     url: String,
     session: String,
     cseq: u32,
@@ -175,7 +187,8 @@ impl Session {
         };
         let id = rand::random::<u32>();
         let mut s = Self {
-            tcp,
+            tcp: wire::Wire::new(tcp),
+            modern: None,
             url: format!("rtsp://{target}/{id}"),
             session: String::new(),
             cseq: 0,
@@ -193,54 +206,65 @@ impl Session {
             cache: VecDeque::new(),
             cancel: cancel.clone(),
         };
-        let family = if local.is_ipv4() { "IP4" } else { "IP6" };
-        let body = format!(
-            "v=0\r\no=iTunes {id} 0 IN {family} {local}\r\ns=iTunes\r\nc=IN {family} {}\r\nt=0 0\r\nm=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100\r\n",
-            target.ip()
-        );
-        s.request(
-            "ANNOUNCE",
-            "Content-Type: application/sdp\r\n",
-            body.as_bytes(),
-        )?;
-        let transport = format!(
-            "Transport: RTP/AVP/UDP;unicast;mode=record;control_port={};timing_port={}\r\n",
-            s.control.local_addr().map_err(out)?.port(),
-            s.timing.local_addr().map_err(out)?.port()
-        );
-        let reply = s.request("SETUP", &transport, &[])?;
-        s.session = header(&reply, "Session")
-            .unwrap_or_default()
-            .split(';')
-            .next()
-            .unwrap_or_default()
-            .to_owned();
-        if s.session.len() > 128 || s.session.contains(['\r', '\n']) {
-            return Err(OutputError::DeviceLost);
-        }
-        let port = header(&reply, "Transport")
-            .and_then(|v| {
-                v.split(';').find_map(|p| {
-                    p.trim()
-                        .strip_prefix("server_port=")
-                        .and_then(|v| v.parse::<u16>().ok())
+        if shared.settings().airplay2 {
+            s.setup_modern(shared).map_err(|error| {
+                shared.report(&error.to_string());
+                if matches!(error, pairing::Error::Cancelled) {
+                    OutputError::Cancelled
+                } else {
+                    OutputError::DeviceLost
+                }
+            })?;
+        } else {
+            let family = if local.is_ipv4() { "IP4" } else { "IP6" };
+            let body = format!(
+                "v=0\r\no=iTunes {id} 0 IN {family} {local}\r\ns=iTunes\r\nc=IN {family} {}\r\nt=0 0\r\nm=audio 0 RTP/AVP 96\r\na=rtpmap:96 AppleLossless\r\na=fmtp:96 352 0 16 40 10 14 2 255 0 0 44100\r\n",
+                target.ip()
+            );
+            s.request(
+                "ANNOUNCE",
+                "Content-Type: application/sdp\r\n",
+                body.as_bytes(),
+            )?;
+            let transport = format!(
+                "Transport: RTP/AVP/UDP;unicast;mode=record;control_port={};timing_port={}\r\n",
+                s.control.local_addr().map_err(out)?.port(),
+                s.timing.local_addr().map_err(out)?.port()
+            );
+            let reply = s.request("SETUP", &transport, &[])?;
+            s.session = header(&reply, "Session")
+                .unwrap_or_default()
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            if s.session.len() > 128 || s.session.contains(['\r', '\n']) {
+                return Err(OutputError::DeviceLost);
+            }
+            let port = header(&reply, "Transport")
+                .and_then(|v| {
+                    v.split(';').find_map(|p| {
+                        p.trim()
+                            .strip_prefix("server_port=")
+                            .and_then(|v| v.parse::<u16>().ok())
+                    })
                 })
-            })
-            .filter(|v| *v > 0)
-            .ok_or(OutputError::DeviceLost)?;
-        s.remote.set_port(port);
-        s.remote_control = header(&reply, "Transport")
-            .and_then(|v| {
-                v.split(';').find_map(|p| {
-                    p.trim()
-                        .strip_prefix("control_port=")
-                        .and_then(|v| v.parse::<u16>().ok())
+                .filter(|v| *v > 0)
+                .ok_or(OutputError::DeviceLost)?;
+            s.remote.set_port(port);
+            s.remote_control = header(&reply, "Transport")
+                .and_then(|v| {
+                    v.split(';').find_map(|p| {
+                        p.trim()
+                            .strip_prefix("control_port=")
+                            .and_then(|v| v.parse::<u16>().ok())
+                    })
                 })
-            })
-            .filter(|v| *v > 0)
-            .map(|port| SocketAddr::new(target.ip(), port));
-        if s.remote_control.is_none() {
-            return Err(OutputError::DeviceLost);
+                .filter(|v| *v > 0)
+                .map(|port| SocketAddr::new(target.ip(), port));
+            if s.remote_control.is_none() {
+                return Err(OutputError::DeviceLost);
+            }
         }
         s.request(
             "RECORD",
@@ -278,6 +302,17 @@ impl Session {
         body: &[u8],
         deadline: Instant,
     ) -> Result<String, OutputError> {
+        self.exchange_until(method, &self.url.clone(), headers, body, deadline)
+            .map(|v| v.0)
+    }
+    fn exchange_until(
+        &mut self,
+        method: &str,
+        path: &str,
+        headers: &str,
+        body: &[u8],
+        deadline: Instant,
+    ) -> Result<(String, Vec<u8>), OutputError> {
         self.cseq += 1;
         let session = if self.session.is_empty() {
             String::new()
@@ -286,7 +321,7 @@ impl Session {
         };
         let request = format!(
             "{method} {} RTSP/1.0\r\nCSeq: {}\r\nUser-Agent: Sonicfast/0.15\r\n{session}{headers}Content-Length: {}\r\n\r\n",
-            self.url,
+            path,
             self.cseq,
             body.len()
         );
@@ -321,7 +356,7 @@ impl Session {
         }
         let mut body = vec![0; length];
         self.read_servicing(&mut body, deadline, method != "TEARDOWN")?;
-        Ok(reply)
+        Ok((reply, body))
     }
     fn read_servicing(
         &mut self,
@@ -382,7 +417,13 @@ impl Session {
         packet.extend_from_slice(&self.seq.to_be_bytes());
         packet.extend_from_slice(&self.stamp.to_be_bytes());
         packet.extend_from_slice(&self.ssrc.to_be_bytes());
-        packet.extend(alac(pcm));
+        if let Some(transport) = &mut self.modern {
+            transport
+                .audio(&mut packet, pcm)
+                .map_err(|_| OutputError::DeviceLost)?;
+        } else {
+            packet.extend(alac(pcm));
+        }
         self.audio.send_to(&packet, self.remote).map_err(out)?;
         self.cache.push_back((self.seq, packet));
         if self.cache.len() > 512 {
@@ -398,12 +439,25 @@ impl Session {
     }
     fn service(&mut self) -> Result<(), OutputError> {
         if self.last_check.elapsed() >= Duration::from_secs(2) {
-            self.request("OPTIONS", "", &[])?;
+            if self.modern.is_some() {
+                self.exchange_until(
+                    "POST",
+                    "/feedback",
+                    "",
+                    &[],
+                    Instant::now() + Duration::from_secs(2),
+                )?;
+            } else {
+                self.request("OPTIONS", "", &[])?;
+            }
             self.last_check = Instant::now();
         }
         self.service_udp()
     }
     fn service_udp(&mut self) -> Result<(), OutputError> {
+        if let Some(transport) = &mut self.modern {
+            transport.service().map_err(|_| OutputError::DeviceLost)?;
+        }
         let mut buf = [0; 2048];
         for _ in 0..16 {
             match self.timing.recv_from(&mut buf) {
@@ -452,7 +506,10 @@ impl Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.tcp.set_write_timeout(Some(Duration::from_millis(50)));
+        let _ = self
+            .tcp
+            .tcp
+            .set_write_timeout(Some(Duration::from_millis(50)));
         let _ = self.request_until(
             "TEARDOWN",
             "",

@@ -970,6 +970,7 @@ pub struct DragEntry {
 
 #[derive(Clone, Debug)]
 pub enum Dialog {
+    AirPlayPairing,
     ServerConnections,
     ConfirmRemoveServer {
         id: String,
@@ -1119,6 +1120,16 @@ pub enum Action {
         immediate: bool,
     },
     DiscoverOutputs,
+    PairAirPlay {
+        settings: crate::casting::Settings,
+        force: bool,
+    },
+    SubmitAirPlayPin {
+        attempt: u64,
+        pin: crate::casting::airplay::pairing::Pin,
+    },
+    CancelAirPlayPairing(u64),
+    UseAirPlayPairing(u64),
     LibrarySettings {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: crate::subsonic::downloads::Settings,

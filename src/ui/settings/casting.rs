@@ -20,7 +20,7 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     let rows = [
         RowText::new(
             "Output",
-            "Choose local playback, AirPlay Classic, Chromecast or the configured Snapcast server.",
+            "Choose local playback, AirPlay, Chromecast or the configured Snapcast server.",
         ),
         RowText::new(
             "Trusted network",
@@ -32,7 +32,7 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         ),
         RowText::new(
             "Receiver port",
-            "AirPlay normally uses 5000; Chromecast normally uses 8009.",
+            "AirPlay Classic normally uses 5000; newer AirPlay receivers often use 7000. Chromecast normally uses 8009.",
         ),
         RowText::new(
             "Receiver certificate",
@@ -42,6 +42,10 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         RowText::new(
             "Connection",
             "Changes apply automatically after a short typing pause. Playing music continues on the new output; paused music stays paused.",
+        ),
+        RowText::new(
+            "AirPlay pairing",
+            "Use an on-screen PIN with newer receivers, including Roku. Pairing keys are remembered in the system credential store.",
         ),
     ];
     if !section_matches(needle, "Casting", &rows) {
@@ -122,6 +126,28 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
                 app.actions.push(Action::CastingSettings(settings));
             }
         });
+        if draft.kind(app.settings.snapcast.send) == Kind::AirPlay {
+            filtered_row(ui, &palette, needle, "Casting", &rows[7], |ui| {
+                if widgets::switch(
+                    ui,
+                    &palette,
+                    "Receiver uses AirPlay PIN pairing",
+                    &mut draft.airplay2,
+                )
+                .changed()
+                {
+                    immediate = true;
+                }
+                if draft.airplay2
+                    && theme::soft_button(ui, &palette, None, "Pair receiver…", false).clicked()
+                {
+                    app.actions.push(Action::PairAirPlay {
+                        settings: draft.clone(),
+                        force: true,
+                    });
+                }
+            });
+        }
         if draft.kind(app.settings.snapcast.send) == Kind::Chromecast {
             theme::subtle(
                 ui,
@@ -216,7 +242,7 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
                     )
                     .clicked()
                     {
-                        app.actions.push(Action::CastingSettings(Settings {
+                        let settings = Settings {
                             output: Some(receiver.kind),
                             host: receiver.address.ip().to_string(),
                             port: receiver.address.port(),
@@ -230,15 +256,29 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
                             } else {
                                 String::new()
                             },
-                        }));
+                            airplay2: receiver.airplay2,
+                        };
+                        app.actions.push(if receiver.pairing {
+                            Action::PairAirPlay {
+                                settings,
+                                force: false,
+                            }
+                        } else {
+                            Action::CastingSettings(settings)
+                        });
                     }
                 });
                 if !receiver.supported {
                     theme::subtle(
                         ui,
                         &palette,
-                        "Requires AirPlay pairing, password or encryption; not supported yet",
+                        receiver
+                            .reason
+                            .as_deref()
+                            .unwrap_or("Receiver is not supported"),
                     );
+                } else if receiver.pairing {
+                    theme::subtle(ui, &palette, "AirPlay · on-screen PIN on first connection");
                 }
             }
             theme::subtle(ui, &palette, &app.casting_status);

@@ -15,12 +15,12 @@ Use one output at a time. Choosing Local turns off Snapcast Receive so your own
 queue can play. AirPlay/Cast and the independent Snapcast receiver can coexist;
 the output picker and settings show a notice when receiving is also enabled.
 
-## AirPlay Classic
+## AirPlay
 
-Select a password-free Classic receiver, such as Shairport Sync. Sonicfast sends
-its processed audio directly; EQ and visualization remain available. A receiver
-that requires pairing, encryption or a password is currently unsupported.
-AirPlay 2 grouping is not implemented. Playback has about two seconds of receiver
+Select a password-free Classic receiver, such as Shairport Sync, or a newer
+receiver with an on-screen AirPlay code, such as Roku. Sonicfast sends its
+processed audio directly; EQ and visualization remain available.
+AirPlay grouping is not implemented. Playback has about two seconds of receiver
 buffering, including after transport changes. Pause/resume retains the heard
 song position. An output error requires pressing Play to reconnect.
 
@@ -29,6 +29,34 @@ some stereos use a port other than 5000. Current builds answer clock requests
 during the initial handshake, which receivers such as the Pioneer VSX-1123
 require before accepting playback. If a stereo wakes and selects AirPlay but
 playback immediately fails, update/rebuild Sonicfast before retrying.
+
+### Roku and on-screen PIN pairing
+
+Choose **Find receivers** in the output picker, then select your Roku. Sonicfast
+discovers both Classic RAOP and newer AirPlay advertisements; the Roku appears
+even when it advertises only the newer service, normally on port 7000.
+
+On the first connection, enter the four-digit AirPlay code shown on the TV into
+Sonicfast's pairing dialog. Leave the TV awake while pairing. Successful pairing
+selects the receiver and reconnects your current song automatically, preserving
+whether it was playing or paused. Cancel keeps your previous output.
+
+Pairing keys are saved in the operating system's protected credential store,
+separately from music-server sign-ins. A remembered receiver does not need a new
+PIN for every song or pause/resume. If the store is locked/unavailable, pairing
+works for this app session and Sonicfast tells you it could not remember it.
+PINs are never saved in settings. Control and audio use authenticated encryption
+on the paired transport; Classic receivers keep their existing transport.
+
+For manual setup, enter the receiver's advertised host and port under
+**Settings → Casting**, enable **Receiver uses AirPlay PIN pairing**, then choose
+**Pair receiver…**. Use this button to pair again if the TV has forgotten this
+computer. Incorrect/expired codes and receiver attempt limits have explicit
+errors with a retry option. Pairing requests expire after two minutes.
+
+Receiver passwords, older legacy PIN schemes, RSA/FairPlay-only receivers,
+Apple Home-only access policies and synchronized AirPlay groups are unsupported.
+PIN support uses HomeKit-style AirPlay pairing, not the Roku account PIN.
 
 ## Chromecast
 
@@ -52,7 +80,8 @@ does not silently switch to local speakers.
 ## Manual receiver and self-hosted Cast targets
 
 Use **Settings → Casting** to enter an IP/hostname and port manually. AirPlay
-normally uses 5000; Cast normally uses 8009. Snapcast's server/source settings
+Classic normally uses 5000; newer AirPlay receivers commonly use 7000; Cast
+normally uses 8009. Snapcast's server/source settings
 remain in its own section. Changes apply automatically: switches and selections
 apply immediately, while text/number edits apply after a short typing pause.
 Incomplete or invalid fields show **Not applied** and keep the last working

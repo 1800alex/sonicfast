@@ -8,7 +8,8 @@ contribution restrictions are superseded by this fork's scope.
 Keep rendering responsive, credentials protected, and existing audio/device
 processing intact. Test behavior that can regress. No browser, telemetry or
 hosted backend is planned. Snapcast audio transport is authorized from 0.15.0 (ADR 011);
-AirPlay Classic and Cast outputs are authorized by ADR 012. General remote queue
+AirPlay Classic and Cast outputs are authorized by ADR 012; ADR 013 adds native
+PIN-paired encrypted single-receiver AirPlay audio. General remote queue
 coordination remains outside scope. Avoid unrelated
 settings and UI redesigns. Keep review screenshots outside git.
 

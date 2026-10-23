@@ -4,6 +4,13 @@ Date: 2026-10-22. The `sonicfast` executable uses Libresonic/OpenSubsonic.
 The legacy executable remains available for comparison; this matrix records
 actual server/native evidence, not cross-platform release support.
 
+The [AirPlay PIN follow-up](airplay-pairing.md) adds `_airplay._tcp` discovery,
+HomeKit-style on-screen PIN pairing and encrypted single-receiver audio. An
+owner-selected TCL/Roku G137X accepted pairing and ten seconds of silent native
+streaming. Independent Docker tests decode encrypted PCM and reject incorrect
+PINs/forged proofs and signatures. This is not a hardware listening or grouping
+claim.
+
 The [MPRIS artwork correction](mpris-artwork.md) verifies authenticated artwork
 through the app's loader into readable file URIs on a private Linux D-Bus session,
 including arrival, replacement and clearing. It adds no real-server or rendered

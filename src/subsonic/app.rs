@@ -113,6 +113,24 @@ impl App {
 
     pub(super) fn subsonic_event(&mut self, event: S) {
         match event {
+            S::AirPlayPairing(status) => {
+                use crate::casting::airplay::pairing::Stage;
+                if self.airplay_pairing.attempt != status.attempt {
+                    return;
+                }
+                if self.airplay_pairing.stage == status.stage {
+                    return;
+                }
+                let paired = status.stage == Stage::Paired
+                    && matches!(self.dialog, Some(Dialog::AirPlayPairing));
+                self.airplay_pin.clear();
+                self.airplay_pairing = status.clone();
+                if paired {
+                    self.dialog = None;
+                    self.toast(&status.message);
+                    self.actions.push(Action::UseAirPlayPairing(status.attempt));
+                }
+            }
             S::CastingStatus(status) => self.casting_status = status,
             S::Receivers(result) => {
                 self.casting_scanning = false;
@@ -302,6 +320,50 @@ impl App {
             return None;
         }
         let request = match action {
+            Action::UseAirPlayPairing(attempt) => {
+                if self.airplay_pairing.attempt != attempt
+                    || self.airplay_pairing.stage != crate::casting::airplay::pairing::Stage::Paired
+                {
+                    return None;
+                }
+                return self.subsonic_action(Action::CastingSettings(
+                    self.airplay_pairing.settings.clone(),
+                ));
+            }
+            Action::PairAirPlay {
+                mut settings,
+                force,
+            } => {
+                settings.output = Some(crate::casting::Kind::AirPlay);
+                settings.airplay2 = true;
+                if let Err(error) = settings.validate() {
+                    self.toast_error(&error);
+                    return None;
+                }
+                self.airplay_pin.clear();
+                self.airplay_pairing.attempt = self.airplay_pairing.attempt.wrapping_add(1);
+                self.casting_draft = None;
+                self.airplay_pairing.stage = crate::casting::airplay::pairing::Stage::Starting;
+                self.airplay_pairing.settings = settings.clone();
+                self.airplay_pairing.message =
+                    "Requesting an AirPlay code from the receiver…".into();
+                self.show_devices = false;
+                self.dialog = Some(Dialog::AirPlayPairing);
+                Request::PairAirPlay { settings, force }
+            }
+            Action::SubmitAirPlayPin { attempt, pin } => Request::SubmitAirPlayPin { attempt, pin },
+            Action::CancelAirPlayPairing(attempt) => {
+                self.airplay_pin.clear();
+                self.dialog = None;
+                self.airplay_pairing.stage = crate::casting::airplay::pairing::Stage::Idle;
+                Request::CancelAirPlayPairing(attempt)
+            }
+            Action::CloseDialog if matches!(self.dialog, Some(Dialog::AirPlayPairing)) => {
+                self.airplay_pin.clear();
+                self.dialog = None;
+                self.airplay_pairing.stage = crate::casting::airplay::pairing::Stage::Idle;
+                Request::CancelAirPlayPairing(self.airplay_pairing.attempt)
+            }
             Action::DiscoverOutputs => {
                 if self.casting_scanning {
                     return None;
@@ -337,6 +399,16 @@ impl App {
                 if let Err(error) = settings.validate_with_snapcast(&self.settings.snapcast) {
                     self.toast_error(&error);
                     return None;
+                }
+                self.airplay_pairing.stage = crate::casting::airplay::pairing::Stage::Idle;
+                if matches!(self.dialog, Some(Dialog::AirPlayPairing)) {
+                    self.backend
+                        .send(Command::Subsonic(Request::CancelAirPlayPairing(
+                            self.airplay_pairing.attempt,
+                        )));
+                    self.airplay_pin.clear();
+                    self.dialog = None;
+                    self.airplay_pairing.stage = crate::casting::airplay::pairing::Stage::Idle;
                 }
                 self.casting_draft = None;
                 if settings.output == Some(crate::casting::Kind::Local)

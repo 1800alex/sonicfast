@@ -106,5 +106,5 @@ snapcast-smoke-logs: ## Show recent manual Snapcast server/client logs.
 
 .PHONY: casting-test
 casting-test: ## Test AirPlay and Cast playback through isolated Docker audio receivers.
-	$(CARGO) build --locked --example casting_probe --example snapcast_probe
+	$(CARGO) build --locked --example casting_probe --example airplay_pair_probe --example snapcast_probe
 	$(PYTHON) integration/casting/test.py

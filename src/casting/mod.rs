@@ -40,6 +40,8 @@ pub struct Settings {
     pub allow_lan: bool,
     /// Explicit identity pin for a self-hosted Cast receiver. Blank uses Google device authentication.
     pub certificate_sha256: String,
+    /// Authenticated AirPlay transport, negotiated by newer audio receivers.
+    pub airplay2: bool,
 }
 impl Settings {
     pub fn kind(&self, snapcast_send: bool) -> Kind {
@@ -109,6 +111,9 @@ pub struct Receiver {
     pub name: String,
     pub address: SocketAddr,
     pub supported: bool,
+    pub pairing: bool,
+    pub airplay2: bool,
+    pub reason: Option<String>,
 }
 #[derive(Clone, Default)]
 pub struct Shared(Arc<Mutex<State>>);
@@ -117,6 +122,7 @@ struct State {
     settings: Settings,
     targets: Vec<SocketAddr>,
     status: String,
+    pairing: airplay::pairing::State,
 }
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -164,6 +170,8 @@ impl Shared {
             "Ready"
         }
         .into();
+        drop(state);
+        self.restore_pairing();
         Ok(())
     }
 }

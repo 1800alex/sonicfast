@@ -15,7 +15,7 @@ RUN autoreconf -fi \
     && make DESTDIR=/install install
 
 FROM alpine:3.23.4
-RUN apk add --no-cache avahi dbus libconfig libcrypto3 libpulse popt soxr ffmpeg-libs su-exec pulseaudio pulseaudio-utils python3 mpv openssl \
+RUN apk add --no-cache avahi dbus libconfig libcrypto3 libpulse popt soxr ffmpeg-libs su-exec pulseaudio pulseaudio-utils python3 py3-cryptography mpv openssl \
     && mkdir -p /run/dbus \
     && rm -f /etc/avahi/services/*.service
 COPY --from=builder /install/usr/local/bin/shairport-sync /usr/local/bin/shairport-sync
@@ -23,6 +23,7 @@ COPY --from=builder /source/LICENSES /usr/share/licenses/shairport-sync/LICENSES
 COPY --from=builder /source/COPYING /usr/share/licenses/shairport-sync/COPYING
 COPY casting/start.py /usr/local/bin/start.py
 COPY casting/cast_receiver.py /usr/local/bin/cast_receiver.py
+COPY casting/hap_receiver.py /usr/local/bin/hap_receiver.py
 COPY snapcast/music-fixture.py /usr/local/bin/music-fixture.py
 COPY snapcast/tone.flac /usr/local/share/sonicfast-tone.flac
 ENTRYPOINT ["python3", "/usr/local/bin/start.py"]

@@ -11,11 +11,11 @@ documentation site includes no analytics script.
 | --- | --- |
 | Your configured music server | Authentication, library requests, playback streams, playlist/heart/rating changes and enabled scrobble reports |
 | Your optional Snapcast server | Processed audio when Send is enabled; receiver identity, clock messages and received audio when Receive is enabled |
-| Selected AirPlay receiver | Processed audio, volume and timing messages after enabling LAN casting |
+| Selected AirPlay receiver | Processed audio, volume/timing and requested PIN pairing/identity verification after enabling LAN casting |
 | Selected Cast receiver | Song metadata, playback controls and a temporary URL for the selected original; the receiver fetches it from this computer |
 | LRCLIB | Artist, title, album and duration for lyric lookup |
 | Visualizer preset sources | Optional preset downloads used by MilkDrop |
-| Your operating system's credential store | Remembered server secrets |
+| Your operating system's credential store | Remembered server secrets and AirPlay pairing keys in separate namespaces |
 | Your selected download directory | Original music files you download |
 
 Snapcast is disabled by default and requires independent consent to unencrypted TCP
@@ -24,7 +24,11 @@ The generated receiver ID is stored in settings and identifies this app to that
 server. Received audio does not create local song history or scrobbles.
 
 AirPlay/Cast sending also requires explicit LAN consent. AirPlay Classic is
-unencrypted. Cast control uses authenticated TLS (Google device authentication
+unencrypted. PIN-paired AirPlay uses SRP to prove the displayed code, verifies
+the paired receiver's identity on each connection, and encrypts control, event
+and audio traffic. Pairing keys live in the protected store; PINs are not saved
+in settings or logs. Receiver discovery alone does not start pairing or audio.
+Cast control uses authenticated TLS (Google device authentication
 or an explicitly entered certificate fingerprint for an owner-operated target).
 The selected original is served over LAN HTTP with a per-track bearer path,
 restricted to that receiver's IP; it is revoked on replacement/disconnect/shutdown.

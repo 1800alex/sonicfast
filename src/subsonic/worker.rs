@@ -224,7 +224,7 @@ pub async fn run(
     let mut profiles = Profiles::load(&path);
     let secrets = Secrets::new(dirs.state.clone());
     let snapcast = crate::snapcast::Manager::new();
-    let casting = crate::casting::Shared::default();
+    let casting = crate::casting::Shared::with_pairing_store(dirs.state.join("airplay-pairing"));
     let mut scrobble_settings = l::playback::scrobble::ScrobbleSettings::default();
     let mut download_settings = super::downloads::Settings::default();
     let mut downloads: Option<super::downloads::Manager> = None;
@@ -530,6 +530,17 @@ pub async fn run(
                             let result=tokio::task::spawn_blocking(crate::casting::discover).await.unwrap_or_else(|_|Err("Receiver discovery stopped".into()));
                             emit(&tx,&wake,E::Subsonic(super::Event::Receivers(result)));
                         });
+                    }
+                    b::Command::Subsonic(Request::PairAirPlay { settings, force }) => {
+                        casting.begin_pairing(settings, force);
+                        emit(&tx, &wake, E::Subsonic(super::Event::AirPlayPairing(casting.pairing_status())));
+                    }
+                    b::Command::Subsonic(Request::SubmitAirPlayPin { attempt, pin }) => {
+                        casting.finish_pairing(attempt, pin);
+                        emit(&tx, &wake, E::Subsonic(super::Event::AirPlayPairing(casting.pairing_status())));
+                    }
+                    b::Command::Subsonic(Request::CancelAirPlayPairing(attempt)) => {
+                        casting.cancel_pairing(attempt);
                     }
                     b::Command::Subsonic(Request::Sync) => {
                         // Cancel catalogue reads only. Playback, writes, scrobbles
@@ -1152,6 +1163,7 @@ pub async fn run(
                 }
             }
             _ = interval.tick() => {
+                emit(&tx, &wake, E::Subsonic(super::Event::AirPlayPairing(casting.pairing_status())));
                 emit(&tx,&wake,E::Subsonic(super::Event::CastingStatus(casting.status())));
                 emit(&tx, &wake, E::Subsonic(super::Event::Snapcast(snapcast.shared.status())));
                 if dirty && let (Some(profile), Some(p)) = (&selected, &player) {

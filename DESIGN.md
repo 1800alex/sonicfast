@@ -27,6 +27,11 @@ and Cast sending, a shared output picker and a garage software Cast target.
 ADR 012 supersedes the remaining audio-casting deferral for those outputs;
 general remote queue coordination and AirPlay 2 grouping remain deferred.
 
+**PIN pairing extension (2026-10-23):** The owner requested Roku AirPlay
+discovery and on-screen PIN handling. ADR 013 authorizes native HomeKit-style
+pairing, protected pairing credentials and encrypted single-receiver audio.
+AirPlay grouping and general remote queue coordination remain deferred.
+
 > **Agent handoff:** This document is the product and technical brief for an intentional fork of Spotifast. Read it in full, then execute one gated phase at a time. Do not assume examples in this document are already implemented. Do not replace the interface, rewrite the audio device stack, or start remote synchronization work during the MVP.
 
 ## 1. Executive summary

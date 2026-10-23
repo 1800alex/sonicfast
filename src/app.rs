@@ -421,6 +421,8 @@ pub struct App {
     pub casting_status: String,
     pub casting_receivers: Vec<crate::casting::Receiver>,
     pub casting_scanning: bool,
+    pub airplay_pairing: crate::casting::airplay::pairing::Status,
+    pub airplay_pin: String,
     pub casting_draft: Option<(crate::casting::Settings, Instant)>,
     pub snapcast_draft: Option<(crate::snapcast::Settings, Instant)>,
     pub auth: AuthStatus,
@@ -1145,6 +1147,8 @@ impl App {
             casting_status: String::new(),
             casting_receivers: Vec::new(),
             casting_scanning: false,
+            airplay_pairing: Default::default(),
+            airplay_pin: String::new(),
             casting_draft: None,
             snapcast_draft: None,
             palette,
@@ -11090,6 +11094,10 @@ impl App {
             }
             Action::SnapcastSettings(_) => {}
             Action::CastingSettings(_)
+            | Action::PairAirPlay { .. }
+            | Action::SubmitAirPlayPin { .. }
+            | Action::CancelAirPlayPairing(_)
+            | Action::UseAirPlayPairing(_)
             | Action::DiscoverOutputs
             | Action::EditCastingSettings { .. }
             | Action::EditSnapcastSettings { .. } => {}
@@ -13459,6 +13467,165 @@ mod tests {
     use crate::api::models::{
         Episode, Image, Page as ApiPage, ResumePoint, SavedEpisode, SavedTrack, SearchResults,
     };
+
+    #[test]
+    fn airplay_pairing_waits_for_current_confirmation_and_never_persists_the_pin() {
+        use crate::casting::{
+            Kind, Settings as Output,
+            airplay::pairing::{Pin, Stage, Status},
+        };
+        let mut app = test_app("airplay-pairing-state");
+        app.subsonic = true;
+        let receiver = Output {
+            output: Some(Kind::AirPlay),
+            host: "192.0.2.12".into(),
+            port: 7000,
+            allow_lan: true,
+            airplay2: true,
+            ..Default::default()
+        };
+        app.subsonic_action(Action::PairAirPlay {
+            settings: receiver.clone(),
+            force: false,
+        });
+        let attempt = app.airplay_pairing.attempt;
+        assert!(matches!(app.dialog, Some(Dialog::AirPlayPairing)));
+        assert_ne!(
+            app.settings.casting, receiver,
+            "Pairing must finish before changing the output"
+        );
+        app.airplay_pin = "0427".into();
+        assert!(
+            !serde_json::to_string(&app.settings)
+                .unwrap()
+                .contains("0427")
+        );
+        assert!(
+            !format!(
+                "{:?}",
+                Action::SubmitAirPlayPin {
+                    attempt,
+                    pin: Pin("0427".into())
+                }
+            )
+            .contains("0427")
+        );
+        let mut result = Status {
+            attempt: attempt - 1,
+            settings: receiver.clone(),
+            stage: Stage::Paired,
+            message: "Fixture paired".into(),
+        };
+        app.subsonic_event(crate::subsonic::Event::AirPlayPairing(result.clone()));
+        assert!(
+            app.actions.is_empty(),
+            "An older receiver's result must not switch outputs"
+        );
+        result.attempt = attempt;
+        app.subsonic_event(crate::subsonic::Event::AirPlayPairing(result));
+        assert!(app.dialog.is_none() && app.airplay_pin.is_empty());
+        app.apply_actions(&egui::Context::default());
+        assert_eq!(app.settings.casting, receiver);
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn cancelling_or_selecting_local_cannot_later_apply_a_paired_receiver() {
+        use crate::casting::{
+            Kind, Settings as Output,
+            airplay::pairing::{Stage, Status},
+        };
+        let mut app = test_app("airplay-pairing-cancel");
+        app.subsonic = true;
+        let receiver = Output {
+            output: Some(Kind::AirPlay),
+            host: "192.0.2.12".into(),
+            port: 7000,
+            allow_lan: true,
+            airplay2: true,
+            ..Default::default()
+        };
+        let mut forbidden = receiver.clone();
+        forbidden.allow_lan = false;
+        app.subsonic_action(Action::PairAirPlay {
+            settings: forbidden,
+            force: true,
+        });
+        assert!(app.dialog.is_none(), "Pairing requires LAN consent");
+        for close in [true, false] {
+            app.subsonic_action(Action::PairAirPlay {
+                settings: receiver.clone(),
+                force: true,
+            });
+            let attempt = app.airplay_pairing.attempt;
+            app.airplay_pin = "0427".into();
+            if close {
+                app.subsonic_action(Action::CloseDialog);
+            } else {
+                app.subsonic_action(Action::CastingSettings(Output {
+                    output: Some(Kind::Local),
+                    ..Default::default()
+                }));
+            }
+            app.subsonic_event(crate::subsonic::Event::AirPlayPairing(Status {
+                attempt,
+                settings: receiver.clone(),
+                stage: Stage::Paired,
+                message: "Too late".into(),
+            }));
+            app.apply_actions(&egui::Context::default());
+            assert!(app.dialog.is_none() && app.airplay_pin.is_empty());
+            assert_eq!(app.settings.casting.kind(false), Kind::Local);
+        }
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn queued_pairing_completion_cannot_undo_a_newer_output_choice() {
+        use crate::casting::{
+            Kind, Settings as Output,
+            airplay::pairing::{Stage, Status},
+        };
+        let mut app = test_app("airplay-pairing-queued-result");
+        app.subsonic = true;
+        let receiver = Output {
+            output: Some(Kind::AirPlay),
+            host: "192.0.2.12".into(),
+            port: 7000,
+            allow_lan: true,
+            airplay2: true,
+            ..Default::default()
+        };
+        for start_again in [false, true] {
+            app.subsonic_action(Action::PairAirPlay {
+                settings: receiver.clone(),
+                force: true,
+            });
+            let attempt = app.airplay_pairing.attempt;
+            app.subsonic_event(crate::subsonic::Event::AirPlayPairing(Status {
+                attempt,
+                settings: receiver.clone(),
+                stage: Stage::Paired,
+                message: "Fixture paired".into(),
+            }));
+            // Completion is queued for the end of this frame. A newer action
+            // must still supersede it before that queued action is applied.
+            if start_again {
+                app.subsonic_action(Action::PairAirPlay {
+                    settings: receiver.clone(),
+                    force: true,
+                });
+            } else {
+                app.subsonic_action(Action::CastingSettings(Output {
+                    output: Some(Kind::Local),
+                    ..Default::default()
+                }));
+            }
+            app.apply_actions(&egui::Context::default());
+            assert_eq!(app.settings.casting.kind(false), Kind::Local);
+        }
+        app.backend.shutdown();
+    }
 
     #[test]
     fn subsonic_startup_does_not_wait_for_legacy_proxy_restore() {

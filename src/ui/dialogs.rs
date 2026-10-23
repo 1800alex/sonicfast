@@ -40,6 +40,30 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             match dialog {
                 // Drawn by cover_art above.
                 Dialog::CoverArt { .. } => {}
+                Dialog::AirPlayPairing => {
+                    use crate::casting::airplay::pairing::{Pin, Stage};
+                    let status = app.airplay_pairing.clone();
+                    theme::text(ui, "Pair AirPlay receiver", theme::bold(20.0), palette.text);
+                    ui.add_space(8.0);
+                    ui.label(if status.settings.name.is_empty() { &status.settings.host } else { &status.settings.name });
+                    ui.label(&status.message);
+                    if matches!(status.stage, Stage::Starting | Stage::Finishing) { ui.spinner(); }
+                    if status.stage == Stage::Pin {
+                        let response = crate::ui::widgets::text_edit(ui, locale,
+                            egui::TextEdit::singleline(&mut app.airplay_pin).password(true).char_limit(4).hint_text("4-digit AirPlay code").desired_width(180.0));
+                        if app.airplay_pin.is_empty() { response.request_focus(); }
+                        let valid = app.airplay_pin.len() == 4 && app.airplay_pin.bytes().all(|v|v.is_ascii_digit());
+                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui.add_enabled_ui(valid, |ui| theme::pill_button(ui, &palette, "Pair", true)).inner.clicked() || (enter && valid) {
+                            app.actions.push(Action::SubmitAirPlayPin { attempt: status.attempt, pin: Pin(std::mem::take(&mut app.airplay_pin)) });
+                        }
+                    }
+                    if status.stage == Stage::Failed && theme::soft_button(ui, &palette, None, "Try again", false).clicked() {
+                        app.actions.push(Action::PairAirPlay { settings: status.settings, force: true });
+                    }
+                    ui.add_space(12.0);
+                    if theme::pill_button(ui, &palette, "Cancel", false).clicked() { app.actions.push(Action::CancelAirPlayPairing(status.attempt)); }
+                }
                 Dialog::ServerConnections => {
                     if app.server_form.editing { crate::subsonic::ui::connection_form(app, ui); }
                     else { crate::subsonic::ui::connections(app, ui); }

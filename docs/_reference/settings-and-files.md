@@ -12,7 +12,7 @@ Open Settings using the gear button. Search filters the settings rows.
 | Scrobbling | Enable reporting and set the percentage/time thresholds |
 | Downloads | Enable downloads, choose a folder and open the queue |
 | Snapcast | Send audio to Snapserver, receive synchronized PCM/FLAC and configure routing |
-| Casting | Choose Local/AirPlay/Cast/Snapcast, allow LAN casting and configure a manual receiver or explicit certificate pin |
+| Casting | Choose Local/AirPlay/Cast/Snapcast, allow LAN casting, pair a PIN-protected AirPlay receiver or configure a manual receiver/explicit Cast certificate pin |
 | Playback | Choose the output device and native playback options |
 | Appearance | Themes, light/dark/system appearance and language |
 | Equalizer | Ten-band EQ, preamp and saved presets |

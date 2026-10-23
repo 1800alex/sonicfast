@@ -26,6 +26,15 @@ pub enum Request {
         snapcast: crate::snapcast::Settings,
     },
     DiscoverOutputs,
+    PairAirPlay {
+        settings: crate::casting::Settings,
+        force: bool,
+    },
+    SubmitAirPlayPin {
+        attempt: u64,
+        pin: crate::casting::airplay::pairing::Pin,
+    },
+    CancelAirPlayPairing(u64),
     Configure {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: downloads::Settings,
@@ -63,6 +72,7 @@ pub enum QueueAction {
     Skip(usize),
 }
 pub enum Event {
+    AirPlayPairing(crate::casting::airplay::pairing::Status),
     CastingStatus(String),
     Receivers(Result<Vec<crate::casting::Receiver>, String>),
     Snapcast(crate::snapcast::Status),

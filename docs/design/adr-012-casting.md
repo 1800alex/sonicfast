@@ -1,5 +1,9 @@
 # ADR 012: AirPlay Classic and Cast audio outputs
 
+The subsequent [ADR 013](adr-013-airplay-pairing.md) extends the original
+password-free Classic-only scope below with native PIN pairing and encrypted
+single-receiver AirPlay audio. Group coordination stays deferred.
+
 Date: 2026-10-23. The owner authorized the shared output picker and both senders,
 then requested a software Cast target in the garage Docker stack.
 

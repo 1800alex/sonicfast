@@ -22,14 +22,14 @@ impl eframe::App for Review {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.app.background_frame(&ctx);
-        self.app.auth = if (0..=5).contains(&self.stage) {
+        self.app.auth = if (0..=8).contains(&self.stage) {
             AuthStatus::Connected {
                 username: "Visual fixture".into(),
             }
         } else {
             AuthStatus::SignedOut
         };
-        self.app.user = if (0..=5).contains(&self.stage) {
+        self.app.user = if (0..=8).contains(&self.stage) {
             Some(
                 serde_json::from_value(
                     serde_json::json!({"id":"visual-fixture","display_name":"Visual fixture"}),
@@ -92,6 +92,29 @@ impl eframe::App for Review {
                             d.insert_temp(egui::Id::new("casting-unused"), true);
                         });
                     }
+                    6 => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                            1100.0, 850.0,
+                        )));
+                        self.app.actions.push(Action::SetTheme(ThemeChoice::Dark));
+                        self.app.airplay_pairing = sonicfast::casting::airplay::pairing::Status {
+                            attempt: 800,
+                            settings: sonicfast::casting::Settings {
+                                name: "Living room Roku".into(),
+                                ..Default::default()
+                            },
+                            stage: sonicfast::casting::airplay::pairing::Stage::Pin,
+                            message: "Enter the four-digit AirPlay code shown on your TV.".into(),
+                        };
+                        self.app.dialog = Some(sonicfast::model::Dialog::AirPlayPairing);
+                    }
+                    7 => self.app.actions.push(Action::SetTheme(ThemeChoice::Light)),
+                    8 => {
+                        self.app.airplay_pairing.stage =
+                            sonicfast::casting::airplay::pairing::Stage::Failed;
+                        self.app.airplay_pairing.message =
+                            sonicfast::casting::airplay::pairing::Error::Authentication.to_string();
+                    }
                     _ => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 }
             }
@@ -134,12 +157,27 @@ fn main() -> eframe::Result {
             name: "Garage".into(),
             address: "127.0.0.1:5000".parse().unwrap(),
             supported: true,
+            pairing: false,
+            airplay2: false,
+            reason: None,
         },
         sonicfast::casting::Receiver {
             kind: sonicfast::casting::Kind::Chromecast,
             name: "Garage Cast".into(),
             address: "127.0.0.1:8009".parse().unwrap(),
             supported: true,
+            pairing: false,
+            airplay2: false,
+            reason: None,
+        },
+        sonicfast::casting::Receiver {
+            kind: sonicfast::casting::Kind::AirPlay,
+            name: "Living room Roku".into(),
+            address: "192.0.2.12:7000".parse().unwrap(),
+            supported: true,
+            pairing: true,
+            airplay2: true,
+            reason: None,
         },
     ];
     app.casting_status = "Ready; press Play".into();
