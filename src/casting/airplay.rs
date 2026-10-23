@@ -38,9 +38,8 @@ impl Sender {
         if self.session.is_none() {
             self.shared.report("Connecting to AirPlay receiver");
             self.session = Some(Session::connect(&self.shared, cancel).inspect_err(|_| {
-                self.shared.report(
-                    "AirPlay connection failed; pairing/password-only receivers are not supported",
-                )
+                self.shared
+                    .report("AirPlay handshake failed; check the receiver and network")
             })?);
         }
         self.pending.extend_from_slice(samples);
@@ -135,6 +134,7 @@ struct Session {
     started: Instant,
     last_check: Instant,
     cache: VecDeque<(u16, Vec<u8>)>,
+    cancel: Cancellation,
 }
 impl Session {
     fn connect(shared: &Shared, cancel: &Cancellation) -> Result<Self, OutputError> {
@@ -163,7 +163,7 @@ impl Session {
             }
         }
         let (tcp, target) = tcp.ok_or(OutputError::DeviceLost)?;
-        tcp.set_read_timeout(Some(Duration::from_millis(700)))
+        tcp.set_read_timeout(Some(Duration::from_millis(10)))
             .map_err(out)?;
         tcp.set_write_timeout(Some(Duration::from_millis(700)))
             .map_err(out)?;
@@ -191,6 +191,7 @@ impl Session {
             started: Instant::now(),
             last_check: Instant::now(),
             cache: VecDeque::new(),
+            cancel: cancel.clone(),
         };
         let family = if local.is_ipv4() { "IP4" } else { "IP6" };
         let body = format!(
@@ -258,6 +259,25 @@ impl Session {
         Ok(s)
     }
     fn request(&mut self, method: &str, headers: &str, body: &[u8]) -> Result<String, OutputError> {
+        let result = self.request_until(
+            method,
+            headers,
+            body,
+            Instant::now() + Duration::from_secs(2),
+        );
+        if let Err(error) = &result {
+            // Method and our typed error are safe; never log arbitrary receiver headers/bodies.
+            log::warn!("AirPlay {method} failed: {error:?}");
+        }
+        result
+    }
+    fn request_until(
+        &mut self,
+        method: &str,
+        headers: &str,
+        body: &[u8],
+        deadline: Instant,
+    ) -> Result<String, OutputError> {
         self.cseq += 1;
         let session = if self.session.is_empty() {
             String::new()
@@ -273,17 +293,23 @@ impl Session {
         self.tcp.write_all(request.as_bytes()).map_err(out)?;
         self.tcp.write_all(body).map_err(out)?;
         let mut bytes = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(2);
         while !bytes.ends_with(b"\r\n\r\n") {
             if bytes.len() >= 8192 || Instant::now() > deadline {
                 return Err(OutputError::DeviceLost);
             }
             let mut b = [0];
-            self.tcp.read_exact(&mut b).map_err(out)?;
+            self.read_servicing(&mut b, deadline, method != "TEARDOWN")?;
             bytes.push(b[0]);
         }
         let reply = String::from_utf8(bytes).map_err(|_| OutputError::DeviceLost)?;
         if reply.split_whitespace().nth(1) != Some("200") {
+            if let Some(status) = reply
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse::<u16>().ok())
+            {
+                log::warn!("AirPlay {method} returned RTSP status {status}");
+            }
             return Err(OutputError::DeviceLost);
         }
         let length = header(&reply, "Content-Length")
@@ -294,8 +320,38 @@ impl Session {
             return Err(OutputError::DeviceLost);
         }
         let mut body = vec![0; length];
-        self.tcp.read_exact(&mut body).map_err(out)?;
+        self.read_servicing(&mut body, deadline, method != "TEARDOWN")?;
         Ok(reply)
+    }
+    fn read_servicing(
+        &mut self,
+        bytes: &mut [u8],
+        deadline: Instant,
+        cancellable: bool,
+    ) -> Result<(), OutputError> {
+        let mut received = 0;
+        while received < bytes.len() {
+            if cancellable && self.cancel.is_cancelled() {
+                return Err(OutputError::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                return Err(OutputError::DeviceLost);
+            }
+            // Real receivers may withhold SETUP/RECORD until their initial NTP
+            // exchange succeeds. Service UDP while waiting for every RTSP response.
+            self.service_udp()?;
+            match self.tcp.read(&mut bytes[received..]) {
+                Ok(0) => return Err(OutputError::DeviceLost),
+                Ok(n) => received += n,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(e) => return Err(out(e)),
+            }
+        }
+        Ok(())
     }
     fn audio(&mut self, pcm: &[i16], cancel: &Cancellation) -> Result<(), OutputError> {
         // Bound prebuffering to 100 ms; timestamps include the receiver latency.
@@ -315,7 +371,7 @@ impl Session {
         }
         self.service()?;
         if self.frames.is_multiple_of((FRAMES * 125) as u64) {
-            let mut sync = vec![0x80, 0xd4, 0, 7];
+            let mut sync = vec![if self.frames == 0 { 0x90 } else { 0x80 }, 0xd4, 0, 7];
             sync.extend_from_slice(&self.stamp.wrapping_sub(LATENCY).to_be_bytes());
             sync.extend_from_slice(&ntp().to_be_bytes());
             sync.extend_from_slice(&self.stamp.to_be_bytes());
@@ -345,6 +401,9 @@ impl Session {
             self.request("OPTIONS", "", &[])?;
             self.last_check = Instant::now();
         }
+        self.service_udp()
+    }
+    fn service_udp(&mut self) -> Result<(), OutputError> {
         let mut buf = [0; 2048];
         for _ in 0..16 {
             match self.timing.recv_from(&mut buf) {
@@ -393,9 +452,13 @@ impl Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.tcp.set_read_timeout(Some(Duration::from_millis(50)));
         let _ = self.tcp.set_write_timeout(Some(Duration::from_millis(50)));
-        let _ = self.request("TEARDOWN", "", &[]);
+        let _ = self.request_until(
+            "TEARDOWN",
+            "",
+            &[],
+            Instant::now() + Duration::from_millis(50),
+        );
     }
 }
 fn header<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -435,4 +498,192 @@ fn alac(samples: &[i16]) -> Vec<u8> {
     }
     put(7, 3);
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader},
+        net::TcpListener,
+        sync::mpsc,
+    };
+
+    fn read_request(reader: &mut BufReader<TcpStream>) -> String {
+        let mut request = String::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "Sender disconnected"
+            );
+            request.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+            assert!(request.len() < 8192);
+        }
+        let length = header(&request, "Content-Length")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        assert!(length < 8192);
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        request
+    }
+
+    fn clock_exchange(timing: &UdpSocket, target: SocketAddr, sequence: u16) {
+        let mut packet = [0; 32];
+        packet[..2].copy_from_slice(&[0x80, 0xd2]);
+        packet[2..4].copy_from_slice(&sequence.to_be_bytes());
+        let sent = ntp();
+        packet[24..32].copy_from_slice(&sent.to_be_bytes());
+        timing.send_to(&packet, target).unwrap();
+        let mut reply = [0; 64];
+        let (n, peer) = timing
+            .recv_from(&mut reply)
+            .expect("Receiver needs timing before RECORD can finish");
+        assert_eq!(peer, target);
+        assert_eq!(n, 32);
+        assert_eq!(&reply[..2], &[0x80, 0xd3]);
+        assert_eq!(&reply[8..16], &sent.to_be_bytes());
+        assert!(u64::from_be_bytes(reply[16..24].try_into().unwrap()) >= sent);
+        assert!(u64::from_be_bytes(reply[24..32].try_into().unwrap()) >= sent);
+    }
+
+    /// Behaves like a hardware receiver that gates RECORD on initial NTP.
+    fn receiver(withhold_record: bool) -> (u16, mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (ready, wait) = mpsc::channel();
+        let task = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            tcp.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+            tcp.set_write_timeout(Some(Duration::from_secs(4))).unwrap();
+            let mut reader = BufReader::new(tcp.try_clone().unwrap());
+            assert!(read_request(&mut reader).starts_with("ANNOUNCE "));
+            tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n")
+                .unwrap();
+            let setup = read_request(&mut reader);
+            assert!(setup.starts_with("SETUP "));
+            let timing_port = header(&setup, "Transport")
+                .unwrap()
+                .split(';')
+                .find_map(|v| v.strip_prefix("timing_port="))
+                .unwrap()
+                .parse::<u16>()
+                .unwrap();
+            let target = SocketAddr::from(([127, 0, 0, 1], timing_port));
+            let timing = UdpSocket::bind("127.0.0.1:0").unwrap();
+            timing
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let audio = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let control = UdpSocket::bind("127.0.0.1:0").unwrap();
+            // Gate SETUP too: some receivers start the exchange before replying.
+            clock_exchange(&timing, target, 0);
+            tcp.write_all(format!("RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: 1\r\nTransport: RTP/AVP/UDP;server_port={};control_port={};timing_port={}\r\n\r\n", audio.local_addr().unwrap().port(),control.local_addr().unwrap().port(),timing.local_addr().unwrap().port()).as_bytes()).unwrap();
+            assert!(read_request(&mut reader).starts_with("RECORD "));
+            for sequence in 1..=3 {
+                clock_exchange(&timing, target, sequence);
+            }
+            ready.send(()).unwrap();
+            if !withhold_record {
+                tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 3\r\nContent-Length: 4\r\n\r\n")
+                    .unwrap();
+                // Timing must also keep working while reading a response body.
+                clock_exchange(&timing, target, 4);
+                tcp.write_all(b"test").unwrap();
+                assert!(read_request(&mut reader).starts_with("SET_PARAMETER "));
+                tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 4\r\n\r\n")
+                    .unwrap();
+                control
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                audio
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut sync = [0; 64];
+                assert_eq!(control.recv_from(&mut sync).unwrap().0, 20);
+                assert_eq!(
+                    &sync[..4],
+                    &[0x90, 0xd4, 0, 7],
+                    "First sync needs the extension marker"
+                );
+                let mut packet = [0; 2048];
+                assert!(audio.recv_from(&mut packet).unwrap().0 > 12);
+                assert_eq!(&packet[..2], &[0x80, 0xe0]);
+                assert_eq!(&sync[16..20], &packet[4..8]);
+                let next = u32::from_be_bytes(sync[16..20].try_into().unwrap());
+                let heard = u32::from_be_bytes(sync[4..8].try_into().unwrap());
+                assert_eq!(next.wrapping_sub(heard), LATENCY);
+            }
+            assert!(read_request(&mut reader).starts_with("TEARDOWN "));
+            tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 5\r\n\r\n")
+                .unwrap();
+        });
+        (port, wait, task)
+    }
+
+    async fn shared(port: u16) -> Shared {
+        let shared = Shared::default();
+        shared
+            .configure(super::super::Settings {
+                output: Some(super::super::Kind::AirPlay),
+                host: "127.0.0.1".into(),
+                port,
+                allow_lan: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        shared
+    }
+
+    #[tokio::test]
+    async fn handshake_services_clock_requests_before_setup_record_and_body_complete() {
+        let (port, ready, task) = receiver(false);
+        let mut session = Session::connect(&shared(port).await, &Cancellation::default()).unwrap();
+        session
+            .audio(&[0; FRAMES * 2], &Cancellation::default())
+            .unwrap();
+        ready.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(session);
+        task.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_rtsp_reply_still_has_a_bounded_deadline() {
+        let (port, ready, task) = receiver(true);
+        let shared = shared(port).await;
+        let started = Instant::now();
+        assert!(matches!(
+            Session::connect(&shared, &Cancellation::default()),
+            Err(OutputError::DeviceLost)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        ready.recv_timeout(Duration::from_secs(1)).unwrap();
+        task.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_handshake_releases_receiver_without_waiting_for_record_timeout() {
+        let (port, ready, task) = receiver(true);
+        let shared = shared(port).await;
+        let cancel = Cancellation::default();
+        let token = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            ready.recv_timeout(Duration::from_secs(2)).unwrap();
+            token.cancel();
+        });
+        let started = Instant::now();
+        assert!(matches!(
+            Session::connect(&shared, &cancel),
+            Err(OutputError::Cancelled)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        canceller.join().unwrap();
+        task.join().unwrap();
+    }
 }

@@ -15,6 +15,11 @@ history, keepalive and cancellation. Only unencrypted, password-free Classic
 receivers are supported. AirPlay 2, RSA/FairPlay and pairing are not implemented.
 Pause reopens the decoder at the heard position, avoiding skipping the buffered
 audio on resume. Receiver buffering still delays audible transport changes.
+The sender services UDP timing/control while waiting for RTSP headers and bodies,
+including SETUP and RECORD. Hardware can require its initial clock exchange before
+acknowledging RECORD. Short read polls retain cancellation and an absolute request
+deadline; TEARDOWN has a separate short deadline. The first sync packet carries
+the protocol's initial extension marker.
 
 Chromecast uses the Default Media Receiver rather than the legacy Spotify app.
 The inherited Cast nonce/certificate authentication runs before sharing a media

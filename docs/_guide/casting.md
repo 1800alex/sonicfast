@@ -23,6 +23,12 @@ AirPlay 2 grouping is not implemented. Playback has about two seconds of receive
 buffering, including after transport changes. Pause/resume retains the heard
 song position. An output error requires pressing Play to reconnect.
 
+Use the discovered receiver's advertised port when configuring it manually;
+some stereos use a port other than 5000. Current builds answer clock requests
+during the initial handshake, which receivers such as the Pioneer VSX-1123
+require before accepting playback. If a stereo wakes and selects AirPlay but
+playback immediately fails, update/rebuild Sonicfast before retrying.
+
 ## Chromecast
 
 Select a Google Cast receiver and play a supported original file. Sonicfast

@@ -30,6 +30,16 @@ It does not modify the manual Snapcast environment or the garage deployment.
 Rust tests exercise Cast device authentication, generic receiver launch,
 correlated media controls, playback-state mapping and protected HTTP serving:
 HEAD/ranges/CORS, wrong peer, forged/revoked URLs and invalid range requests.
+AirPlay regression tests emulate a receiver that withholds SETUP/RECORD until
+clock replies arrive, including a timing request during a response body. They
+also check cancellation, a missing RTSP reply and the first sync/audio markers.
+Shairport alone does not reproduce this hardware handshake ordering.
 Genuine Chromecast hardware and Google SDK sender interoperability require a
 separate device test. The garage's certificate-pinned software receiver is an
 owner-operated Cast-compatible target, not a Google-authenticated Chromecast.
+
+For an explicitly selected receiver, `casting_probe PORT HOST --silence` sends
+ten seconds of silent audio through the actual sender. This checks handshake,
+keepalive, sending and teardown without an audible tone. It does not establish
+speaker output or decoder correctness; the Docker tone/capture test does that
+for Shairport. Omitting `--silence` sends the synthetic tone.

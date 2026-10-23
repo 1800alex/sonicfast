@@ -60,3 +60,34 @@ fixed the decoder boundary. Actual app tests also exposed mpv's version-dependen
 `loadfile` arguments and an idle-property error; the software receiver handles
 both older distribution mpv and current versions. These fixes were verified with
 decoded output rather than connection status alone.
+
+## Hardware handshake correction (2026-10-23)
+
+A Pioneer VSX-1123 advertised password-free, unencrypted ALAC over UDP on port
+1024. Its ANNOUNCE and SETUP succeeded, but RECORD waited for the initial clock
+exchange. The sender only serviced UDP after RECORD completed, so the stereo
+woke and selected AirPlay while Sonicfast timed out without sending audio.
+An independent handshake reproduced the timeout; answering the three timing
+requests let RECORD return 200 immediately. No authentication or codec change
+was needed.
+
+The sender now services timing/control while reading RTSP headers and bodies.
+Ten-millisecond read polls retain cancellation, a two-second absolute request
+deadline and a separate 50-millisecond teardown deadline. The first sync packet
+also has its required initial extension marker. Diagnostics log only our method,
+typed error and numeric RTSP status, never arbitrary receiver headers or bodies.
+
+Three regression tests cover clock-gated SETUP/RECORD/body completion and initial
+sync/audio markers, a missing reply, and cancellation before RECORD completes.
+`make verify` passed (1393 default-feature and 1433 all-feature library tests;
+existing opt-in tests stayed ignored). `make casting-test` passed again with
+decoded Shairport audio and the actual app's AirPlay/Cast transport controls.
+The production documentation build/link check and default native app build also
+passed, using the previously documented Rust stable override.
+
+The patched native sender separately completed ten seconds of **silent** RTP
+streaming to the Pioneer, including keepalive, drain, cancellation and teardown.
+This confirms hardware handshake/transport progress, not audible speaker output.
+The user's normal music playback still needs a listening retry. This extends the
+earlier software-only evidence without adding Google Cast hardware or other OS
+claims. Diagnostic logs remain in ignored `.cache/airplay-receiver/`.

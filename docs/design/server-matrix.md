@@ -11,6 +11,9 @@ software Cast target decodes the actual App's synthetic Subsonic FLAC through
 the protected local media listener and mpv. Wrong-pin rejection and Cast
 pause/seek/resume are exercised. This is not Google SDK or real Chromecast
 hardware compatibility evidence. See [executed casting evidence](casting.md).
+The subsequent [Pioneer handshake correction](casting.md#hardware-handshake-correction-2026-10-23)
+adds a VSX-1123 RTSP/clock exchange and ten-second silent native sender test.
+Audible output on that stereo still needs a listening retry.
 
 The [M4A follow-up](m4a-playback.md) adds AAC-LC/ALAC decoder coverage and an
 actual App AAC/M4A playback path. Tail metadata uses advertised, validated raw
