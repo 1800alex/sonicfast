@@ -1150,15 +1150,13 @@ pub async fn run(
                         }
                         emit(&tx, &wake, queue_event(&queue, &source_positions));
                     }
-                    emit(
-                        &tx,
-                        &wake,
-                        E::Local(Box::new(local(
-                            &queue,
-                            &p.snapshot(),
-                            selected.as_ref().map_or("", |p| &p.username),
-                        ))),
+                    let state = local(
+                        &queue,
+                        &p.snapshot(),
+                        selected.as_ref().map_or("", |p| &p.username),
                     );
+                    mirror_to_airplay(&casting, &art, &state);
+                    emit(&tx, &wake, E::Local(Box::new(state)));
                     dirty = true;
                 }
             }
@@ -1322,6 +1320,40 @@ async fn read_resume(dirs: &AppDirs, id: &str) -> Option<Resume> {
         return None;
     }
     serde_json::from_slice(&tokio::fs::read(path).await.ok()?).ok()
+}
+
+/// Keeps the AirPlay receiver's display in step with the local player.
+fn mirror_to_airplay(casting: &crate::casting::Shared, art: &ArtLoader, state: &LocalState) {
+    let Some(track) = &state.track else {
+        return;
+    };
+    casting.set_now_playing(crate::casting::NowPlaying {
+        title: track.title.clone(),
+        artist: track.artist_names(),
+        album: track.album.clone(),
+        art_url: track.art_url.clone(),
+    });
+    casting.set_progress(crate::casting::Progress {
+        generation: state.seek_sequence,
+        position_ms: u64::from(state.position_ms),
+        duration_ms: u64::from(track.duration_ms),
+        playing: state.playback == Playback::Playing,
+        at: Instant::now(),
+    });
+    if let Some(url) = casting.wants_artwork() {
+        let (art, casting) = (art.clone(), casting.clone());
+        tokio::spawn(async move {
+            let Ok(bytes) = art.fetch(&url).await else {
+                return;
+            };
+            if let Ok(Some(jpeg)) =
+                tokio::task::spawn_blocking(move || crate::casting::airplay::artwork_jpeg(&bytes))
+                    .await
+            {
+                casting.set_artwork(url, jpeg.into());
+            }
+        });
+    }
 }
 
 fn make_player(

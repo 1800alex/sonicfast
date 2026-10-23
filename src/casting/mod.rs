@@ -115,6 +115,42 @@ pub struct Receiver {
     pub airplay2: bool,
     pub reason: Option<String>,
 }
+/// Track text and cover shown on the receiver's own display.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NowPlaying {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub art_url: Option<String>,
+}
+/// Heard position as of `at`, tagged with the player's load/seek generation.
+#[derive(Clone, Copy, Debug)]
+pub struct Progress {
+    pub generation: u64,
+    pub position_ms: u64,
+    pub duration_ms: u64,
+    pub playing: bool,
+    pub at: std::time::Instant,
+}
+impl Progress {
+    pub fn position_now(&self) -> u64 {
+        let moved = if self.playing {
+            self.at.elapsed().as_millis() as u64
+        } else {
+            0
+        };
+        self.position_ms.saturating_add(moved).min(self.duration_ms)
+    }
+}
+/// What an AirPlay session has to mirror; `revision` changes with the text.
+#[derive(Clone, Default)]
+pub struct Metadata {
+    pub revision: u64,
+    pub now: NowPlaying,
+    /// JPEG for `now.art_url`, keyed by that URL.
+    pub artwork: Option<(String, Arc<[u8]>)>,
+    pub progress: Option<Progress>,
+}
 #[derive(Clone, Default)]
 pub struct Shared(Arc<Mutex<State>>);
 #[derive(Default)]
@@ -123,6 +159,8 @@ struct State {
     targets: Vec<SocketAddr>,
     status: String,
     pairing: airplay::pairing::State,
+    metadata: Metadata,
+    art_requested: Option<String>,
 }
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -142,6 +180,40 @@ impl Shared {
     pub fn report(&self, status: &str) {
         self.lock().status = status.into();
     }
+    pub fn metadata(&self) -> Metadata {
+        self.lock().metadata.clone()
+    }
+    pub fn set_now_playing(&self, now: NowPlaying) {
+        let mut state = self.lock();
+        if state.metadata.now != now {
+            state.metadata.now = now;
+            state.metadata.revision += 1;
+        }
+    }
+    pub fn set_progress(&self, progress: Progress) {
+        self.lock().metadata.progress = Some(progress);
+    }
+    /// The cover URL to fetch for an AirPlay receiver, returned once per URL.
+    pub fn wants_artwork(&self) -> Option<String> {
+        let mut state = self.lock();
+        let url = state.metadata.now.art_url.clone()?;
+        let held = state.metadata.artwork.as_ref().map(|(u, _)| u) == Some(&url);
+        if state.settings.output != Some(Kind::AirPlay)
+            || held
+            || state.art_requested.as_ref() == Some(&url)
+        {
+            return None;
+        }
+        state.art_requested = Some(url.clone());
+        Some(url)
+    }
+    /// Stores a fetched cover unless the track moved on while it loaded.
+    pub fn set_artwork(&self, url: String, jpeg: Arc<[u8]>) {
+        let mut state = self.lock();
+        if state.metadata.now.art_url.as_ref() == Some(&url) {
+            state.metadata.artwork = Some((url, jpeg));
+        }
+    }
     pub async fn configure(&self, settings: Settings) -> Result<(), String> {
         settings.validate()?;
         let targets = if matches!(settings.output, Some(Kind::AirPlay | Kind::Chromecast)) {
@@ -160,6 +232,8 @@ impl Shared {
         let mut state = self.lock();
         state.settings = settings;
         state.targets = targets;
+        // A failed or skipped cover fetch may be retried on the new output.
+        state.art_requested = None;
         state.status = if matches!(
             state.settings.output,
             Some(Kind::AirPlay | Kind::Chromecast)
@@ -202,5 +276,43 @@ mod tests {
             s.host = host.into();
             assert!(s.validate().is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn now_playing_bumps_revision_and_artwork_is_requested_once_for_airplay() {
+        let shared = Shared::default();
+        let now = NowPlaying {
+            title: "Song".into(),
+            art_url: Some("sonic-art:1".into()),
+            ..Default::default()
+        };
+        shared.set_now_playing(now.clone());
+        let revision = shared.metadata().revision;
+        shared.set_now_playing(now.clone());
+        assert_eq!(shared.metadata().revision, revision);
+        assert_eq!(shared.wants_artwork(), None, "Local output needs no cover");
+        shared
+            .configure(Settings {
+                output: Some(Kind::AirPlay),
+                host: "127.0.0.1".into(),
+                port: 7000,
+                allow_lan: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(shared.wants_artwork().as_deref(), Some("sonic-art:1"));
+        assert_eq!(shared.wants_artwork(), None);
+        shared.set_artwork("sonic-art:old".into(), Arc::from(&b"stale"[..]));
+        assert!(shared.metadata().artwork.is_none());
+        shared.set_artwork("sonic-art:1".into(), Arc::from(&b"jpeg"[..]));
+        assert_eq!(&*shared.metadata().artwork.unwrap().1, b"jpeg");
+        shared.set_now_playing(NowPlaying {
+            title: "Next".into(),
+            art_url: Some("sonic-art:2".into()),
+            ..Default::default()
+        });
+        assert!(shared.metadata().revision > revision);
+        assert_eq!(shared.wants_artwork().as_deref(), Some("sonic-art:2"));
     }
 }

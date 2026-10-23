@@ -14,3 +14,4 @@
 - [x] Add support for multiple subsonic servers with a connection list (only one at a time)
 - [x] Add "Sync" now button refresh the subsonic api backend (if it's needed?)
 - [x] We need to then update the docs for the connection list changes
+- [ ] AirPlay now-playing metadata (title/artist/album/cover/progress) is written and unit-tested in code only: not compiled or run yet. Run `make test`, then check on Shairport Sync (with a metadata front end) and the Pioneer VSX-1123 / Roku that text, cover and progress appear and update on track change and seek.

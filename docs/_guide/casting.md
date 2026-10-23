@@ -20,6 +20,9 @@ the output picker and settings show a notice when receiving is also enabled.
 Select a password-free Classic receiver, such as Shairport Sync, or a newer
 receiver with an on-screen AirPlay code, such as Roku. Sonicfast sends its
 processed audio directly; EQ and visualization remain available.
+Receivers with a display (Shairport Sync front ends, AVRs, TVs) show the song
+title, artist, album, cover art and a progress bar; receivers without one
+decline it and keep playing.
 AirPlay grouping is not implemented. Playback has about two seconds of receiver
 buffering, including after transport changes. Pause/resume retains the heard
 song position. An output error requires pressing Play to reconnect.

@@ -2,11 +2,13 @@
 //! Packet layouts follow <https://nto.github.io/AirPlay.html>; no receiver code is linked.
 use super::Shared;
 mod crypto;
+mod metadata;
 mod modern;
 pub mod pairing;
 mod wire;
 use crate::{eq::SharedEq, sink::PcmOutput, vis::AudioTap};
 use libresonic::playback::{AudioOutput, Cancellation, OutputError, PcmBlock};
+pub use metadata::artwork_jpeg;
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -69,6 +71,12 @@ impl Sender {
                     + Duration::from_secs_f64(session.frames as f64 / 44100.0),
             );
             self.shared.report("Sending AirPlay audio");
+        }
+        if let Some(session) = self.session.as_mut().filter(|s| s.frames > 0) {
+            session.metadata(&self.shared).inspect_err(|_| {
+                self.shared
+                    .report("AirPlay output stopped; press Play to reconnect")
+            })?;
         }
         Ok(())
     }
@@ -147,6 +155,17 @@ struct Session {
     last_check: Instant,
     cache: VecDeque<(u16, Vec<u8>)>,
     cancel: Cancellation,
+    shown: Shown,
+}
+/// What this session last put on the receiver's display.
+#[derive(Default)]
+struct Shown {
+    checked: Option<Instant>,
+    revision: Option<u64>,
+    /// None until a cover (or its absence) has been sent.
+    art: Option<Option<String>>,
+    generation: Option<u64>,
+    progress_at: Option<Instant>,
 }
 impl Session {
     fn connect(shared: &Shared, cancel: &Cancellation) -> Result<Self, OutputError> {
@@ -205,6 +224,7 @@ impl Session {
             last_check: Instant::now(),
             cache: VecDeque::new(),
             cancel: cancel.clone(),
+            shown: Shown::default(),
         };
         if shared.settings().airplay2 {
             s.setup_modern(shared).map_err(|error| {
@@ -313,6 +333,23 @@ impl Session {
         body: &[u8],
         deadline: Instant,
     ) -> Result<(String, Vec<u8>), OutputError> {
+        let (status, reply, body) = self.exchange_status(method, path, headers, body, deadline)?;
+        if status != 200 {
+            log::warn!("AirPlay {method} returned RTSP status {status}");
+            return Err(OutputError::DeviceLost);
+        }
+        Ok((reply, body))
+    }
+    /// One request/response; the whole reply is consumed whatever its status,
+    /// so a refusal leaves the connection usable.
+    fn exchange_status(
+        &mut self,
+        method: &str,
+        path: &str,
+        headers: &str,
+        body: &[u8],
+        deadline: Instant,
+    ) -> Result<(u16, String, Vec<u8>), OutputError> {
         self.cseq += 1;
         let session = if self.session.is_empty() {
             String::new()
@@ -337,16 +374,11 @@ impl Session {
             bytes.push(b[0]);
         }
         let reply = String::from_utf8(bytes).map_err(|_| OutputError::DeviceLost)?;
-        if reply.split_whitespace().nth(1) != Some("200") {
-            if let Some(status) = reply
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.parse::<u16>().ok())
-            {
-                log::warn!("AirPlay {method} returned RTSP status {status}");
-            }
-            return Err(OutputError::DeviceLost);
-        }
+        let status = reply
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .ok_or(OutputError::DeviceLost)?;
         let length = header(&reply, "Content-Length")
             .unwrap_or("0")
             .parse::<usize>()
@@ -356,7 +388,77 @@ impl Session {
         }
         let mut body = vec![0; length];
         self.read_servicing(&mut body, deadline, method != "TEARDOWN")?;
-        Ok((reply, body))
+        Ok((status, reply, body))
+    }
+    /// Mirrors track text, cover and progress onto the receiver's display,
+    /// as iTunes and OwnTone do. Receivers that lack a display decline these.
+    fn metadata(&mut self, shared: &Shared) -> Result<(), OutputError> {
+        if self
+            .shown
+            .checked
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(250))
+        {
+            return Ok(());
+        }
+        self.shown.checked = Some(Instant::now());
+        let m = shared.metadata();
+        if m.revision == 0 {
+            return Ok(());
+        }
+        if self.shown.revision != Some(m.revision) {
+            self.shown.revision = Some(m.revision);
+            self.shown.progress_at = None;
+            self.set_parameter("application/x-dmap-tagged", &metadata::dmap(&m.now))?;
+        }
+        let art = m
+            .artwork
+            .filter(|(url, _)| m.now.art_url.as_ref() == Some(url));
+        let key = art.as_ref().map(|(url, _)| url.clone());
+        if self.shown.art.as_ref() != Some(&key) {
+            self.shown.art = Some(key);
+            match &art {
+                Some((_, jpeg)) => self.set_parameter("image/jpeg", jpeg)?,
+                // Clears the previous track's cover while this one loads.
+                None => self.set_parameter("image/none", &[])?,
+            }
+        }
+        if let Some(p) = m.progress.filter(|p| p.duration_ms > 0)
+            && (self.shown.generation != Some(p.generation)
+                || self
+                    .shown
+                    .progress_at
+                    .is_none_or(|at| at.elapsed() >= Duration::from_secs(5)))
+        {
+            self.shown.generation = Some(p.generation);
+            self.shown.progress_at = Some(Instant::now());
+            let body = metadata::progress(
+                self.stamp.wrapping_sub(LATENCY),
+                p.position_now(),
+                p.duration_ms,
+            );
+            self.set_parameter("text/parameters", body.as_bytes())?;
+        }
+        Ok(())
+    }
+    /// A declined parameter keeps the stream; only a lost connection fails.
+    fn set_parameter(&mut self, content_type: &str, body: &[u8]) -> Result<(), OutputError> {
+        let headers = format!(
+            "Content-Type: {content_type}\r\nRTP-Info: rtptime={}\r\n",
+            self.stamp
+        );
+        let url = self.url.clone();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        match self.exchange_status("SET_PARAMETER", &url, &headers, body, deadline) {
+            Ok((200, ..)) => Ok(()),
+            Ok((status, ..)) => {
+                log::info!("AirPlay receiver declined {content_type} (RTSP status {status})");
+                Ok(())
+            }
+            Err(error) => {
+                log::warn!("AirPlay SET_PARAMETER {content_type} failed: {error:?}");
+                Err(error)
+            }
+        }
     }
     fn read_servicing(
         &mut self,
@@ -567,6 +669,10 @@ mod tests {
     };
 
     fn read_request(reader: &mut BufReader<TcpStream>) -> String {
+        read_request_body(reader).0
+    }
+
+    fn read_request_body(reader: &mut BufReader<TcpStream>) -> (String, Vec<u8>) {
         let mut request = String::new();
         loop {
             let mut line = String::new();
@@ -587,7 +693,7 @@ mod tests {
         assert!(length < 8192);
         let mut body = vec![0; length];
         reader.read_exact(&mut body).unwrap();
-        request
+        (request, body)
     }
 
     fn clock_exchange(timing: &UdpSocket, target: SocketAddr, sequence: u16) {
@@ -609,8 +715,47 @@ mod tests {
         assert!(u64::from_be_bytes(reply[24..32].try_into().unwrap()) >= sent);
     }
 
+    type Streaming = fn(&mut TcpStream, &mut BufReader<TcpStream>, &UdpSocket, &UdpSocket);
+
     /// Behaves like a hardware receiver that gates RECORD on initial NTP.
     fn receiver(withhold_record: bool) -> (u16, mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
+        receiver_with(withhold_record, first_packets)
+    }
+
+    /// The first sync and audio packets after RECORD.
+    fn first_packets(
+        _: &mut TcpStream,
+        _: &mut BufReader<TcpStream>,
+        audio: &UdpSocket,
+        control: &UdpSocket,
+    ) {
+        control
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        audio
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut sync = [0; 64];
+        assert_eq!(control.recv_from(&mut sync).unwrap().0, 20);
+        assert_eq!(
+            &sync[..4],
+            &[0x90, 0xd4, 0, 7],
+            "First sync needs the extension marker"
+        );
+        let mut packet = [0; 2048];
+        assert!(audio.recv_from(&mut packet).unwrap().0 > 12);
+        assert_eq!(&packet[..2], &[0x80, 0xe0]);
+        assert_eq!(&sync[16..20], &packet[4..8]);
+        let next = u32::from_be_bytes(sync[16..20].try_into().unwrap());
+        let heard = u32::from_be_bytes(sync[4..8].try_into().unwrap());
+        assert_eq!(next.wrapping_sub(heard), LATENCY);
+    }
+
+    /// Runs the handshake, then `streaming` once RECORD and volume are acknowledged.
+    fn receiver_with(
+        withhold_record: bool,
+        streaming: Streaming,
+    ) -> (u16, mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (ready, wait) = mpsc::channel();
@@ -655,26 +800,7 @@ mod tests {
                 assert!(read_request(&mut reader).starts_with("SET_PARAMETER "));
                 tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 4\r\n\r\n")
                     .unwrap();
-                control
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                audio
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                let mut sync = [0; 64];
-                assert_eq!(control.recv_from(&mut sync).unwrap().0, 20);
-                assert_eq!(
-                    &sync[..4],
-                    &[0x90, 0xd4, 0, 7],
-                    "First sync needs the extension marker"
-                );
-                let mut packet = [0; 2048];
-                assert!(audio.recv_from(&mut packet).unwrap().0 > 12);
-                assert_eq!(&packet[..2], &[0x80, 0xe0]);
-                assert_eq!(&sync[16..20], &packet[4..8]);
-                let next = u32::from_be_bytes(sync[16..20].try_into().unwrap());
-                let heard = u32::from_be_bytes(sync[4..8].try_into().unwrap());
-                assert_eq!(next.wrapping_sub(heard), LATENCY);
+                streaming(&mut tcp, &mut reader, &audio, &control);
             }
             assert!(read_request(&mut reader).starts_with("TEARDOWN "));
             tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 5\r\n\r\n")
@@ -706,6 +832,80 @@ mod tests {
             .audio(&[0; FRAMES * 2], &Cancellation::default())
             .unwrap();
         ready.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(session);
+        task.join().unwrap();
+    }
+
+    fn now_playing() -> crate::casting::NowPlaying {
+        crate::casting::NowPlaying {
+            title: "Song".into(),
+            artist: "Band".into(),
+            album: "Record".into(),
+            art_url: Some("sonic-art:1".into()),
+        }
+    }
+
+    /// Text, a refused cover, then progress: a declined parameter keeps the session.
+    fn display_parameters(
+        tcp: &mut TcpStream,
+        reader: &mut BufReader<TcpStream>,
+        _: &UdpSocket,
+        _: &UdpSocket,
+    ) {
+        let (request, body) = read_request_body(reader);
+        assert!(request.starts_with("SET_PARAMETER "));
+        assert_eq!(
+            header(&request, "Content-Type"),
+            Some("application/x-dmap-tagged")
+        );
+        assert!(
+            header(&request, "RTP-Info")
+                .unwrap()
+                .starts_with("rtptime=")
+        );
+        assert_eq!(body, metadata::dmap(&now_playing()));
+        tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 5\r\n\r\n")
+            .unwrap();
+        let (request, body) = read_request_body(reader);
+        assert_eq!(header(&request, "Content-Type"), Some("image/jpeg"));
+        assert_eq!(body, b"jpeg");
+        tcp.write_all(b"RTSP/1.0 501 Not Implemented\r\nCSeq: 6\r\nContent-Length: 4\r\n\r\nnope")
+            .unwrap();
+        let (request, body) = read_request_body(reader);
+        assert_eq!(header(&request, "Content-Type"), Some("text/parameters"));
+        let frames: Vec<u32> = String::from_utf8(body)
+            .unwrap()
+            .strip_prefix("progress: ")
+            .unwrap()
+            .trim_end()
+            .split('/')
+            .map(|v| v.parse().unwrap())
+            .collect();
+        assert_eq!(frames[1].wrapping_sub(frames[0]), 88_200);
+        assert_eq!(frames[2].wrapping_sub(frames[0]), 441_000);
+        tcp.write_all(b"RTSP/1.0 200 OK\r\nCSeq: 7\r\n\r\n")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn display_metadata_reaches_the_receiver_and_a_refusal_keeps_streaming() {
+        let (port, ready, task) = receiver_with(false, display_parameters);
+        let shared = shared(port).await;
+        shared.set_now_playing(now_playing());
+        shared.set_artwork("sonic-art:1".into(), Arc::from(&b"jpeg"[..]));
+        shared.set_progress(crate::casting::Progress {
+            generation: 1,
+            position_ms: 2_000,
+            duration_ms: 10_000,
+            playing: false,
+            at: Instant::now(),
+        });
+        let mut session = Session::connect(&shared, &Cancellation::default()).unwrap();
+        ready.recv_timeout(Duration::from_secs(1)).unwrap();
+        session.metadata(&shared).unwrap();
+        // Nothing changed, so nothing more is sent before TEARDOWN.
+        session.shown.checked = None;
+        session.metadata(&shared).unwrap();
         drop(session);
         task.join().unwrap();
     }

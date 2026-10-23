@@ -92,6 +92,28 @@ The user's normal music playback still needs a listening retry. This extends the
 earlier software-only evidence without adding Google Cast hardware or other OS
 claims. Diagnostic logs remain in ignored `.cache/airplay-receiver/`.
 
+## AirPlay now-playing metadata (2026-10-23)
+
+AirPlay sent audio and volume only, so receivers showed no title or cover; Cast
+already carried title/artist/album in LOAD. The fix follows the iTunes/OwnTone
+RAOP convention, also used by Substreamer's Android sender: after RECORD the
+session sends RTSP `SET_PARAMETER` with an `RTP-Info: rtptime=` header carrying
+a DMAP `mlit` item (`minm`/`asar`/`asal`, `application/x-dmap-tagged`), the
+cover as `image/jpeg` (`image/none` clears the old cover while the new one
+loads), and `progress: start/current/end` in RTP frames (`text/parameters`),
+with `current` anchored at the heard frame (`stamp - LATENCY`).
+
+The worker mirrors each local playback update into `casting::Shared`
+(`NowPlaying`, `Progress`, artwork keyed by its URL). When AirPlay is the
+output it fetches the cover once per URL through `ArtLoader` and re-encodes it
+as a JPEG of at most 600 px a side with bounded decoding. The audio thread
+checks for changes at most every 250 ms and refreshes progress every 5 s or on
+a new load/seek generation. Each new session resends everything because pause,
+seek and track loads reconnect. A non-200 reply is fully consumed and only
+logged, so receivers without a display keep streaming; only a lost connection
+fails. Unit tests cover the DMAP, progress and JPEG encoders and the shared
+state; a fake-receiver test covers the three requests and a refused cover.
+
 ## Automatic settings and playback handoff (2026-10-23)
 
 The owner reported an extra pause/play step after changing outputs, hidden
