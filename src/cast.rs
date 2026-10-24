@@ -52,7 +52,10 @@ pub(crate) struct MediaConnection {
 /// A Cast receiver that answered but did not prove its identity: not a
 /// genuine Google Cast device without a pin, or not the pinned certificate.
 #[derive(Debug)]
-pub(crate) struct Untrusted;
+pub(crate) struct Untrusted {
+    /// SHA-256 of the certificate the receiver presented, for the user to trust.
+    pub(crate) presented: Option<String>,
+}
 impl std::fmt::Display for Untrusted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("the Cast receiver did not prove its identity")
@@ -88,6 +91,13 @@ impl MediaConnection {
             stream: &mut stream,
             deadline,
         };
+        let presented = {
+            use sha2::{Digest, Sha256};
+            channel
+                .stream
+                .peer_certificate()
+                .map(|certificate| format!("{:x}", Sha256::digest(certificate)))
+        };
         let proven = if pin.is_empty() {
             channel.authenticate(&GOOGLE_ROOTS, UnixTime::now())
         } else {
@@ -101,7 +111,7 @@ impl MediaConnection {
                 _ => Err(anyhow!("Receiver certificate fingerprint does not match")),
             }
         };
-        proven.map_err(|_| anyhow::Error::new(Untrusted))?;
+        proven.map_err(|_| anyhow::Error::new(Untrusted { presented }))?;
         Ok(stream)
     }
     pub(crate) fn local_ip(&self) -> Result<IpAddr> {

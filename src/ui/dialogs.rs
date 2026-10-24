@@ -7,8 +7,64 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, Dialog};
 use crate::theme;
 
+/// What Snapcast is and how Sonicfast's two roles in it work.
+fn snapcast_help(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    theme::text(ui, "How Snapcast works", theme::bold(20.0), palette.text);
+    ui.add_space(8.0);
+    let paragraph = |ui: &mut egui::Ui, text: &str| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(text)
+                    .font(theme::regular(14.0))
+                    .color(palette.secondary),
+            )
+            .wrap(),
+        );
+        ui.add_space(8.0);
+    };
+    let heading = |ui: &mut egui::Ui, text: &str| {
+        theme::text(ui, text, theme::semibold(15.0), palette.text);
+        ui.add_space(2.0);
+    };
+    egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
+        paragraph(
+            ui,
+            "Snapcast is a multiroom audio system you run yourself. A Snapserver takes in audio streams and plays them in sync on Snapcast clients (speakers) in each room. You pick which stream each room hears in Snapweb or another Snapcast controller.",
+        );
+        heading(ui, "Send: play your music on Snapcast");
+        paragraph(
+            ui,
+            "1. Add a TCP source for Sonicfast to your Snapserver (format 44100:16:2, port 4953 by default).\n2. Here, turn on Trusted network, enter the server and its source port, then turn on Snapcast output.\n3. Choose Snapcast from the player's output button. Your music now goes to the server instead of this computer's speakers.\n4. In Snapweb, set the rooms you want to the Sonicfast stream.",
+        );
+        heading(ui, "Receive: make this computer a room speaker");
+        paragraph(
+            ui,
+            "Turn on Receive audio to play whatever stream the server assigns to this computer, without installing snapclient. This works on its own, even without signing in to a music server. While only receiving, your own queue is paused.",
+        );
+        heading(ui, "Both: hear your music in sync with other rooms");
+        paragraph(
+            ui,
+            "Choose Snapcast as the output and turn on Receive. Your music goes to the server and comes back in sync with every other room.",
+        );
+        paragraph(
+            ui,
+            "Snapcast audio is unencrypted and unauthenticated, so use it only on a network you trust, or over a VPN.",
+        );
+    });
+    ui.add_space(8.0);
+    buttons(ui, |ui| {
+        if theme::pill_button(ui, &palette, "Close", true).clicked() {
+            app.actions.push(Action::CloseDialog);
+        }
+    });
+}
+
 /// A Cast receiver that did not prove its identity: offer to pin its
 /// certificate. Nothing is saved until the pinned receiver verifies.
+/// A Cast receiver that did not prove it is genuine Google hardware: show
+/// the certificate fingerprint it presented and offer to trust it (or paste
+/// another). Nothing is saved until the pinned receiver verifies.
 fn cast_fingerprint(app: &mut App, ui: &mut egui::Ui) {
     use crate::casting::CheckStage;
     let palette = app.palette;
@@ -18,17 +74,28 @@ fn cast_fingerprint(app: &mut App, ui: &mut egui::Ui) {
     } else {
         check.settings.name.clone()
     };
-    theme::text(ui, "Verify Cast receiver", theme::bold(20.0), palette.text);
+    let changed = check.stage == CheckStage::Untrusted { pinned: true };
+    theme::text(
+        ui,
+        if changed {
+            "Cast receiver changed"
+        } else {
+            "Trust this Cast receiver?"
+        },
+        theme::bold(20.0),
+        palette.text,
+    );
     ui.add_space(8.0);
     let message = match check.stage {
         CheckStage::Untrusted { pinned: true } => format!(
-            "“{name}” no longer matches its saved fingerprint. Paste a new one only if you replaced or reset this receiver."
+            "“{name}” presented a different certificate than the one saved for it. Trust it only if you replaced or reset this receiver."
         ),
         CheckStage::Unreachable => {
             format!("Couldn't reach “{name}”. Check it is on, then try again.")
         }
+        CheckStage::Checking => format!("Connecting to “{name}”…"),
         _ => format!(
-            "“{name}” isn't a verified Google Cast device. If it's a self-hosted receiver you trust, paste its SHA-256 certificate fingerprint."
+            "“{name}” isn't a genuine Google Cast device, such as a self-hosted receiver. Trust it if it's yours; Sonicfast remembers its certificate and asks again if it changes."
         ),
     };
     ui.add(
@@ -41,44 +108,100 @@ fn cast_fingerprint(app: &mut App, ui: &mut egui::Ui) {
     );
     ui.add_space(12.0);
     let checking = check.stage == CheckStage::Checking;
-    let response = ui
-        .add_enabled_ui(!checking, |ui| {
-            crate::ui::widgets::text_edit(
-                ui,
-                app.locale,
-                egui::TextEdit::singleline(&mut app.cast_fingerprint)
-                    .font(egui::TextStyle::Monospace)
-                    .hint_text("AB:CD:… or abcd…")
-                    .desired_width(f32::INFINITY),
-            )
-        })
-        .inner;
-    if app.cast_fingerprint.is_empty() && !checking {
-        response.request_focus();
+    let paste_id = egui::Id::new("cast-fingerprint-paste");
+    // A new check starts with the presented fingerprint, not the paste field.
+    let mut paste = !checking && ui.data(|d| d.get_temp::<bool>(paste_id).unwrap_or(false));
+    if let Some(presented) = check.presented.as_deref().filter(|_| !checking) {
+        // Grouped like `openssl x509 -fingerprint`, for comparing on the receiver.
+        let grouped = presented
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| std::str::from_utf8(pair).unwrap_or("").to_ascii_uppercase())
+            .collect::<Vec<_>>()
+            .join(":");
+        theme::text(
+            ui,
+            "SHA-256 fingerprint",
+            theme::semibold(13.0),
+            palette.text,
+        );
+        Frame::new()
+            .fill(palette.surface)
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::same(8))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(grouped)
+                            .monospace()
+                            .size(12.0)
+                            .color(palette.text),
+                    )
+                    .wrap(),
+                );
+            });
+        ui.add_space(8.0);
+    } else if !checking {
+        paste = true;
     }
-    let valid = crate::casting::normalize_fingerprint(&app.cast_fingerprint).is_some();
-    if !app.cast_fingerprint.is_empty() && !valid {
-        theme::subtle(ui, &palette, "A fingerprint is 64 hexadecimal characters.");
+    let mut auto = app.settings.casting.trust_new_cast_receivers;
+    if !changed
+        && !checking
+        && ui
+            .horizontal(|ui| {
+                let label = "Trust new self-hosted receivers automatically";
+                let changed = crate::ui::widgets::switch(ui, &palette, label, &mut auto).changed();
+                ui.label(egui::RichText::new(label).color(palette.secondary));
+                changed
+            })
+            .inner
+    {
+        app.actions.push(Action::TrustNewCastReceivers(auto));
+    }
+    let mut valid = false;
+    if paste && !checking {
+        ui.add_space(6.0);
+        let response = crate::ui::widgets::text_edit(
+            ui,
+            app.locale,
+            egui::TextEdit::singleline(&mut app.cast_fingerprint)
+                .font(egui::TextStyle::Monospace)
+                .hint_text("Paste a fingerprint: AB:CD:… or abcd…")
+                .desired_width(f32::INFINITY),
+        );
+        if app.cast_fingerprint.is_empty() && check.presented.is_none() {
+            response.request_focus();
+        }
+        valid = crate::casting::normalize_fingerprint(&app.cast_fingerprint).is_some();
+        if !app.cast_fingerprint.is_empty() && !valid {
+            theme::subtle(ui, &palette, "A fingerprint is 64 hexadecimal characters.");
+        }
     }
     ui.add_space(16.0);
     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
     buttons(ui, |ui| {
         if checking {
             theme::spinner(ui, 16.0, palette.accent);
-        } else if ui
-            .add_enabled_ui(valid, |ui| {
-                theme::pill_button(ui, &palette, "Connect", true)
-            })
-            .inner
-            .clicked()
-            || (enter && valid)
+        } else if valid {
+            if theme::pill_button(ui, &palette, "Use fingerprint", true).clicked() || enter {
+                app.actions.push(Action::SubmitCastFingerprint);
+            }
+        } else if check.presented.is_some()
+            && theme::pill_button(ui, &palette, "Trust receiver", true).clicked()
         {
-            app.actions.push(Action::SubmitCastFingerprint);
+            app.actions.push(Action::TrustCastReceiver);
         }
         if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
             app.actions.push(Action::CloseDialog);
         }
+        if !paste
+            && !checking
+            && theme::soft_button(ui, &palette, None, "Paste another…", false).clicked()
+        {
+            paste = true;
+        }
     });
+    ui.data_mut(|d| d.insert_temp(paste_id, paste));
 }
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
@@ -272,6 +395,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 }
+                Dialog::SnapcastHelp => snapcast_help(app, ui),
                 Dialog::Shortcuts => {
                     theme::text(ui, gettext(locale, "Keyboard shortcuts"), theme::bold(20.0), palette.text);
                     ui.add_space(12.0);

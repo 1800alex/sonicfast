@@ -37,6 +37,10 @@ The inherited Cast nonce/certificate authentication runs before sharing a media
 URL. An optional explicit SHA-256 certificate pin supports an owner-operated
 software receiver: TLS proves possession of that pinned key, and Google device
 authentication is not claimed. Pins are never learned automatically from mDNS.
+Amended 2026-10-24 at the owner's request: a pin may come from the certificate a
+receiver presents over TLS when the owner trusts it in the picker's dialog, or
+automatically on first contact with the opt-in **Trust self-hosted Cast
+receivers** setting (trust on first use). A changed certificate always asks.
 The software target is not a certified Chromecast and SDK senders may reject it.
 
 A temporary HTTP listener binds the interface used to reach the receiver. It

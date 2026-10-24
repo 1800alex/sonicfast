@@ -119,3 +119,16 @@ Existing opt-in Navidrome/credential-store tests were not rerun for this change;
 the new Docker suite needs no private server or native credential store. Nix
 release packaging remains opt-in pending the previously documented vendor-hash
 refresh. Software null/file outputs do not establish physical multiroom accuracy.
+
+## Snapcast output switch and help (2026-10-24, v0.15.1)
+
+The owner found the Snapcast option confusing: the output picker listed Snapcast
+whenever the trusted-network switch was on, even with Send and Receive off, and
+the Send switch both "enabled" Snapcast and routed music to it. The Send switch is
+replaced by **Snapcast output** (`snapcast::Settings::offer`), which only lists
+Snapcast in the picker and the Casting Output menu. Routing stays in `send`, set by
+choosing Snapcast there. Turning the switch off while sending routes back to Local.
+`can_send` requires `offer || send` (configs saved while sending keep it), a
+trusted network and a valid server. A **How Snapcast works** dialog explains Send,
+Receive and both together. Evidence: unit tests for `can_send` and a Settings
+render test for the help button; the receive/send transport is unchanged.

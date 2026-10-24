@@ -1375,8 +1375,21 @@ fn make_player(
         client: client.clone(),
         library,
     });
-    if kind == crate::casting::Kind::Chromecast {
-        let p = Player::cast(client, provider, casting).map_err(|e| e.to_string())?;
+    let remote = match kind {
+        crate::casting::Kind::Chromecast => Some(Player::cast(
+            client.clone(),
+            provider.clone(),
+            casting.clone(),
+        )),
+        crate::casting::Kind::Mpd => Some(Player::mpd(
+            client.clone(),
+            provider.clone(),
+            casting.clone(),
+        )),
+        _ => None,
+    };
+    if let Some(remote) = remote {
+        let p = remote.map_err(|e| e.to_string())?;
         p.set_volume(config.initial_volume);
         return Ok(p);
     }

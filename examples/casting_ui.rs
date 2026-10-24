@@ -22,14 +22,14 @@ impl eframe::App for Review {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.app.background_frame(&ctx);
-        self.app.auth = if (0..=9).contains(&self.stage) {
+        self.app.auth = if (0..=12).contains(&self.stage) {
             AuthStatus::Connected {
                 username: "Visual fixture".into(),
             }
         } else {
             AuthStatus::SignedOut
         };
-        self.app.user = if (0..=9).contains(&self.stage) {
+        self.app.user = if (0..=12).contains(&self.stage) {
             Some(
                 serde_json::from_value(
                     serde_json::json!({"id":"visual-fixture","display_name":"Visual fixture"}),
@@ -67,6 +67,10 @@ impl eframe::App for Review {
                         // LAN casting on, with the receivers above; the
                         // picker's own scan is marked done so none starts.
                         self.app.settings.casting.allow_lan = true;
+                        // View state only: shows the check beside a long name.
+                        self.app.settings.casting.output = Some(sonicfast::casting::Kind::Mpd);
+                        self.app.settings.casting.host = "192.0.2.31".into();
+                        self.app.settings.casting.port = 6600;
                         ctx.data_mut(|d| {
                             d.insert_temp(egui::Id::new("casting-output-scanned"), true)
                         });
@@ -74,6 +78,7 @@ impl eframe::App for Review {
                     }
                     2 => {
                         self.app.show_devices = false;
+                        self.app.settings.casting.output = None;
                         // View-state fixture only; do not start a network receiver.
                         self.app.settings.snapcast.receive = true;
                         self.app.settings.snapcast.allow_insecure = true;
@@ -130,8 +135,29 @@ impl eframe::App for Review {
                                 ..Default::default()
                             },
                             stage: sonicfast::casting::CheckStage::Untrusted { pinned: false },
+                            presented: Some(
+                                "3f9a1c07e2b84d5596a0c4e1f27b8d3e6c5a9f01b2d4e6f8a1c3e5079b2d4f6a"
+                                    .into(),
+                            ),
                         };
                         self.app.dialog = Some(sonicfast::model::Dialog::CastFingerprint);
+                    }
+                    10 => {
+                        self.app.dialog = None;
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("settings-filter"), "About".to_string())
+                        });
+                    }
+                    11 => {
+                        self.app.settings.snapcast.receive = false;
+                        self.app.settings.snapcast.allow_insecure = false;
+                        self.app.settings.snapcast.offer = true;
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("settings-filter"), "Snapcast".to_string())
+                        });
+                    }
+                    12 => {
+                        self.app.dialog = Some(sonicfast::model::Dialog::SnapcastHelp);
                     }
                     _ => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 }
@@ -195,6 +221,33 @@ fn main() -> eframe::Result {
             supported: true,
             pairing: true,
             airplay2: true,
+            reason: None,
+        },
+        sonicfast::casting::Receiver {
+            kind: sonicfast::casting::Kind::Mpd,
+            name: "rpi-mpd-office".into(),
+            address: "192.0.2.30:6600".parse().unwrap(),
+            supported: true,
+            pairing: false,
+            airplay2: false,
+            reason: None,
+        },
+        sonicfast::casting::Receiver {
+            kind: sonicfast::casting::Kind::AirPlay,
+            name: "rpi-mpd-office".into(),
+            address: "192.0.2.30:5000".parse().unwrap(),
+            supported: true,
+            pairing: false,
+            airplay2: false,
+            reason: None,
+        },
+        sonicfast::casting::Receiver {
+            kind: sonicfast::casting::Kind::Mpd,
+            name: "A very long music player name in the upstairs office".into(),
+            address: "192.0.2.31:6600".parse().unwrap(),
+            supported: true,
+            pairing: false,
+            airplay2: false,
             reason: None,
         },
         sonicfast::casting::Receiver {

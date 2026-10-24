@@ -187,3 +187,49 @@ invalid paste, verified route, closed dialog); `make casting-test` passed with
 the refactored connect path (pinned software target, wrong pin rejected);
 `examples/casting_ui.rs` captures reviewed the picker and dialog in dark/light.
 The new check flow has not been run against a real self-hosted Cast receiver.
+
+## MPD output (2026-10-24, ADR 014)
+
+`Kind::Mpd` plays through an MPD server that fetches the app's media lease with
+its curl input. `src/casting/mpd.rs` holds the protocol client and the `Device`
+implementation; `src/casting/player.rs` now runs Cast and MPD through one generic
+remote loop. Unit tests cover the greeting check, OK/ACK replies, argument
+quoting (no command injection), permission refusal, status → phase mapping
+(progress, pause, end, takeover, decode error), volume scaling, unseekable
+sources and `_mpd._tcp` discovery naming.
+
+`make casting-test` now also starts unmodified Alpine MPD 0.24.8 (curl input,
+pulse output into the fixture's null sink, uid 1000, loopback per-run port). The
+actual app signs into the synthetic Subsonic server and, on MPD, survives output
+changes during loading, playback and pause, pauses, seeks, resumes, reaches the
+natural end, replays, and keeps its volume; the Pulse monitor capture has
+finite, useful audio (RMS ≈ 0.048). The same run re-proved AirPlay and the
+refactored Cast path. The synthetic music server now offers byte ranges on
+`stream`, as Navidrome does for originals; before that, MPD refused seeks with
+"Not seekable", which led to the graceful unseekable-source behavior above.
+Not verified: a physical Raspberry Pi MPD, MPD versions other than 0.24.8,
+password-protected servers (unsupported), and Avahi discovery on a real LAN.
+
+## Trusting self-hosted Cast receivers; picker tags (2026-10-24)
+
+The owner asked to accept a non-Google Cast receiver's certificate on connect and
+prompt only if it changes. `cast::Untrusted` now carries the SHA-256 of the
+certificate the receiver presented, `Trust::Untrusted { pinned, presented }`
+passes it to the app, and the dialog shows it with **Trust receiver** (pasting
+stays available). `Settings::trust_new_cast_receivers` (opt-in, app-side only, no
+reroute) pins a first-contact receiver automatically; `pinned: true` (a changed
+certificate) always opens the dialog. Trusting rechecks with the pin before
+routing, so a receiver that changes certificate between the two connections is
+not trusted. App test: manual trust, automatic first contact, changed always asks.
+`make casting-test` runs `examples/cast_check.rs` against the software receiver:
+unpinned it is untrusted and presents exactly the fingerprint the receiver
+reports for itself; pinned it verifies; a wrong pin is untrusted with the real
+fingerprint. One run failed earlier in the unchanged AirPlay app proof (2 s tone
+ended mid-transition); the rerun passed every stage.
+
+The picker now ellipsizes long names before a dim AirPlay/Cast/MPD tag, which
+also separates same-named receivers of different kinds. A LAN mDNS browse
+(`examples/mdns_browse.rs`) showed the owner's MPD 0.24.0 servers announce
+`Music Player @ <host>[<pid>]`; all three answered with an MPD greeting. MPD's
+default form is shown as just the host; custom names are unchanged. A loopback
+address is used only when an announcement lists no LAN address.

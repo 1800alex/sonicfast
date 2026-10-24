@@ -14,8 +14,8 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     let mut immediate = false;
     let rows = [
         RowText::new(
-            "Send music",
-            "Play your music through Snapserver instead of the direct local output. Player volume affects this source.",
+            "Snapcast output",
+            "List Snapcast in the player's output button. Choose it there to play your music through Snapserver instead of this computer.",
         ),
         RowText::new(
             "Receive audio",
@@ -53,16 +53,54 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         RowText::new("Receiver status", app.snapcast_status.receiver.clone()),
         RowText::new(
             "Connection",
-            "Changes apply automatically after a short typing pause. Playing music continues unless Receive takes over Local output. Enable Send and Receive together to hear your own source in sync.",
+            "Changes apply automatically after a short typing pause. Playing music continues unless Receive takes over Local output. Choose Snapcast as the output and enable Receive to hear your own music in sync.",
+        ),
+        RowText::new(
+            "About Snapcast",
+            "Snapcast plays one stream in sync on speakers in every room. Sonicfast can send to it, receive from it, or both.",
         ),
     ];
     if !section_matches(needle, "Snapcast", &rows) {
         return false;
     }
     section(ui, &palette, "Snapcast", |ui| {
-        filtered_row(ui, &palette, needle, "Snapcast", &rows[0], |ui| {
-            immediate |= widgets::switch(ui, &palette, "Send music", &mut draft.send).changed();
+        filtered_row(ui, &palette, needle, "Snapcast", &rows[12], |ui| {
+            if theme::soft_button(
+                ui,
+                &palette,
+                Some(theme::Icon::Info),
+                "How Snapcast works",
+                false,
+            )
+            .clicked()
+            {
+                app.actions
+                    .push(Action::ShowDialog(crate::model::Dialog::SnapcastHelp));
+            }
         });
+        filtered_row(ui, &palette, needle, "Snapcast", &rows[0], |ui| {
+            if widgets::switch(ui, &palette, "Snapcast output", &mut draft.offer).changed() {
+                immediate = true;
+                // Turning it off while sending returns the music to this computer.
+                if !draft.offer {
+                    draft.send = false;
+                }
+            }
+        });
+        if draft.offer && !draft.can_send() {
+            super::audio_notice(
+                ui,
+                &palette,
+                "Turn on Trusted network and enter your Snapcast server to list it as an output.",
+            );
+            ui.add_space(6.0);
+        } else if draft.offer && !draft.send {
+            theme::subtle(
+                ui,
+                &palette,
+                "Choose Snapcast from the player's output button to send music.",
+            );
+        }
         filtered_row(ui, &palette, needle, "Snapcast", &rows[1], |ui| {
             immediate |=
                 widgets::switch(ui, &palette, "Receive audio", &mut draft.receive).changed();

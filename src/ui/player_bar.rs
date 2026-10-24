@@ -986,10 +986,8 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, transport_
         && app.settings.casting.kind(app.settings.snapcast.send) != crate::casting::Kind::Local;
     let remote = now.is_some_and(|now| !now.local) || network_output;
     // Playing elsewhere, the button shows that device's own icon.
-    let icon = if network_output
-        && app.settings.casting.kind(app.settings.snapcast.send) == crate::casting::Kind::Chromecast
-    {
-        Icon::Cast
+    let icon = if network_output {
+        super::settings::casting::kind_icon(app.settings.casting.kind(app.settings.snapcast.send))
     } else {
         now.filter(|now| !now.local)
             .and_then(|now| now.device_kind.as_deref())

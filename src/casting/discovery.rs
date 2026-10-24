@@ -18,6 +18,9 @@ pub fn discover() -> Result<Vec<Receiver>, String> {
         let cast = daemon
             .browse("_googlecast._tcp.local.")
             .map_err(|_| "Cannot browse Chromecast receivers")?;
+        let mpd = daemon
+            .browse("_mpd._tcp.local.")
+            .map_err(|_| "Cannot browse MPD servers")?;
         let until = Instant::now() + Duration::from_secs(4);
         let mut found = BTreeMap::new();
         while Instant::now() < until {
@@ -25,6 +28,7 @@ pub fn discover() -> Result<Vec<Receiver>, String> {
                 (&air, Kind::AirPlay, false),
                 (&modern, Kind::AirPlay, true),
                 (&cast, Kind::Chromecast, false),
+                (&mpd, Kind::Mpd, false),
             ] {
                 if let Ok(mdns_sd::ServiceEvent::ServiceResolved(service)) =
                     events.recv_timeout(Duration::from_millis(30))
@@ -40,6 +44,20 @@ pub fn discover() -> Result<Vec<Receiver>, String> {
     result
 }
 
+/// MPD's default `Music Player @ host` name (some builds add `[pid]`) as just
+/// the host. A name the owner chose is shown as it is.
+fn mpd_name(name: &str) -> &str {
+    let Some(host) = name
+        .strip_prefix("Music Player @ ")
+        .filter(|h| !h.is_empty())
+    else {
+        return name;
+    };
+    match host.strip_suffix(']').and_then(|h| h.rsplit_once('[')) {
+        Some((host, pid)) if !host.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => host,
+    }
+}
 fn bits(value: Option<&str>) -> u64 {
     value
         .and_then(|v| u64::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok())
@@ -59,18 +77,29 @@ fn classify(service: &ResolvedService, kind: Kind, modern: bool) -> Option<Recei
             .next()
             .unwrap_or("Receiver")
     });
+    // RAOP instances are named `MAC@Name`.
+    let name = match kind {
+        Kind::AirPlay => name.split_once('@').map_or(name, |(_, v)| v),
+        Kind::Mpd => mpd_name(name),
+        _ => name,
+    };
     let name = name
-        .split_once('@')
-        .map_or(name, |(_, v)| v)
         .chars()
         .filter(|c| !c.is_control())
         .take(128)
         .collect::<String>();
-    let ip = service
+    // An announcement from this computer also lists loopback; prefer the LAN.
+    let addresses: Vec<_> = service
         .get_addresses()
         .iter()
         .map(|v| v.to_ip_addr())
-        .find(|v| v.is_ipv4())?;
+        .filter(|v| v.is_ipv4())
+        .collect();
+    let ip = addresses
+        .iter()
+        .find(|v| !v.is_loopback())
+        .or(addresses.first())
+        .copied()?;
     let flags = bits(prop("sf").or_else(|| prop("flags")));
     let ft = features(prop("ft").or_else(|| prop("features")));
     let airplay2 = kind == Kind::AirPlay && (modern || ft & ((1 << 38) | (1 << 48)) != 0);
@@ -153,6 +182,55 @@ mod tests {
         assert_eq!(receiver.name, "Fixture");
         assert_eq!(receiver.address.port(), 7000);
         assert_eq!(features(Some("0x7F8AD0,0x38BCF46")), 0x038bcf46007f8ad0);
+    }
+    #[test]
+    fn an_mpd_server_is_listed_by_its_announced_name() {
+        let info = mdns_sd::ServiceInfo::new(
+            "_mpd._tcp.local.",
+            "Music Player @ pi",
+            "pi.local.",
+            "192.0.2.30",
+            6600,
+            &[] as &[(&str, &str)],
+        )
+        .unwrap()
+        .as_resolved_service();
+        let receiver = classify(&info, Kind::Mpd, false).unwrap();
+        assert_eq!(receiver.kind, Kind::Mpd);
+        assert_eq!(
+            receiver.name, "pi",
+            "MPD's default name shows just the host"
+        );
+        assert_eq!(receiver.address, "192.0.2.30:6600".parse().unwrap());
+        assert!(receiver.supported && !receiver.pairing);
+    }
+    #[test]
+    fn mpd_default_names_show_the_host_and_custom_names_stay() {
+        for (announced, shown) in [
+            ("Music Player @ rpi-mpd-office[667]", "rpi-mpd-office"),
+            ("Music Player @ alex-desktop", "alex-desktop"),
+            ("Kitchen speakers", "Kitchen speakers"),
+            ("Music Player @ ", "Music Player @ "),
+            ("Den [stereo]", "Den [stereo]"),
+        ] {
+            assert_eq!(mpd_name(announced), shown);
+        }
+    }
+    #[test]
+    fn a_lan_address_is_preferred_over_loopback() {
+        let info = mdns_sd::ServiceInfo::new(
+            "_mpd._tcp.local.",
+            "Music Player @ desktop[11108]",
+            "desktop.local.",
+            &["127.0.0.1", "192.0.2.15"][..],
+            6600,
+            &[] as &[(&str, &str)],
+        )
+        .unwrap()
+        .as_resolved_service();
+        let receiver = classify(&info, Kind::Mpd, false).unwrap();
+        assert_eq!(receiver.address, "192.0.2.15:6600".parse().unwrap());
+        assert_eq!(receiver.name, "desktop");
     }
     #[test]
     fn passwords_home_only_and_video_only_are_not_pin_receivers() {

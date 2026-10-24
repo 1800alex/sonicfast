@@ -116,6 +116,7 @@ impl App {
         self.cast_check.attempt = self.cast_check.attempt.wrapping_add(1);
         self.cast_check.stage = crate::casting::CheckStage::Checking;
         self.cast_check.settings = settings.clone();
+        self.cast_check.presented = None;
         self.backend.send(Command::Subsonic(Request::CheckCast {
             attempt: self.cast_check.attempt,
             settings,
@@ -160,7 +161,18 @@ impl App {
                         self.actions
                             .push(Action::CastingSettings(self.cast_check.settings.clone()));
                     }
-                    Trust::Untrusted { pinned } => {
+                    Trust::Untrusted { pinned, presented } => {
+                        self.cast_check.presented = presented.clone();
+                        // First contact may be trusted automatically; a changed
+                        // certificate always asks.
+                        if let Some(pin) = presented
+                            .filter(|_| !pinned && self.settings.casting.trust_new_cast_receivers)
+                        {
+                            let mut settings = self.cast_check.settings.clone();
+                            settings.certificate_sha256 = pin;
+                            self.check_cast(settings);
+                            return;
+                        }
                         self.cast_check.stage = CheckStage::Untrusted { pinned };
                         self.show_devices = false;
                         self.dialog = Some(Dialog::CastFingerprint);
@@ -410,6 +422,22 @@ impl App {
                     self.toast_error("A fingerprint is 64 hexadecimal characters");
                     return None;
                 };
+                let mut settings = self.cast_check.settings.clone();
+                settings.certificate_sha256 = pin;
+                self.check_cast(settings);
+                return None;
+            }
+            Action::TrustNewCastReceivers(on) => {
+                // App-side only: the output route does not change.
+                self.settings.casting.trust_new_cast_receivers = on;
+                if let Some((draft, _)) = &mut self.casting_draft {
+                    draft.trust_new_cast_receivers = on;
+                }
+                self.mark_settings_dirty();
+                return None;
+            }
+            Action::TrustCastReceiver => {
+                let pin = self.cast_check.presented.clone()?;
                 let mut settings = self.cast_check.settings.clone();
                 settings.certificate_sha256 = pin;
                 self.check_cast(settings);

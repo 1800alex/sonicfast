@@ -15,6 +15,9 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Snapcast is listed in the output picker. Choosing it there sets `send`.
+    pub offer: bool,
+    /// Music is currently routed to Snapserver (the picker's Snapcast choice).
     pub send: bool,
     pub receive: bool,
     pub host: String,
@@ -28,6 +31,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            offer: false,
             send: false,
             receive: false,
             host: "127.0.0.1".into(),
@@ -41,10 +45,12 @@ impl Default for Settings {
     }
 }
 impl Settings {
-    /// Whether Send has been set up (trusted network and a valid server), so
-    /// the output picker can offer Snapcast.
+    /// Whether the output picker lists Snapcast: turned on (or already sending,
+    /// as configs saved before the switch did), on a trusted network with a
+    /// valid server.
     pub fn can_send(&self) -> bool {
-        self.allow_insecure
+        (self.offer || self.send)
+            && self.allow_insecure
             && Settings {
                 send: true,
                 ..self.clone()
@@ -166,13 +172,23 @@ impl Shared {
 mod tests {
     use super::*;
     #[test]
-    fn sending_is_offered_only_once_the_server_is_set_up() {
+    fn sending_is_offered_only_once_turned_on_and_set_up() {
         let mut settings = Settings::default();
         assert!(!settings.can_send(), "a fresh install has not consented");
         settings.allow_insecure = true;
+        assert!(
+            !settings.can_send(),
+            "trusted network alone must not add Snapcast to the picker"
+        );
+        settings.offer = true;
         assert!(settings.can_send());
         settings.host = "http://bad".into();
         assert!(!settings.can_send());
+        // A config saved while sending, before the switch existed, keeps it.
+        let old: Settings =
+            serde_json::from_str(r#"{"send":true,"allow_insecure":true,"host":"127.0.0.1"}"#)
+                .unwrap();
+        assert!(old.can_send());
     }
     #[test]
     fn old_settings_are_disabled_and_explicit_consent_is_required() {

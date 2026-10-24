@@ -23,6 +23,11 @@ restart a finished song when Play is pressed again. A wrong receiver
 certificate pin must fail before playback. The receiver implementation is also
 used by the garage deployment; the public fixture needs no private checkout.
 
+The same app proof runs against unmodified Alpine MPD 0.24.8 (curl input, pulse
+output into the null sink), which fetches the app's lease and decodes it. MPD
+must pause, seek, resume, finish and replay the song. The synthetic music server
+offers byte ranges on originals so receivers can seek, as Navidrome does.
+
 The app proof also changes outputs during metadata loading, during playback and
 while paused. It requires a continuing song/position without another Play action,
 and requires paused music to stay paused. Cast first attempts a wrong certificate

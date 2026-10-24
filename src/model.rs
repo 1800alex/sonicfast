@@ -1012,6 +1012,8 @@ pub enum Dialog {
         duplicate_uris: Vec<String>,
     },
     Shortcuts,
+    /// How Snapcast sending and receiving fit together.
+    SnapcastHelp,
     /// The signed-in account is not Premium, so nothing will play.
     PremiumNeeded,
     /// Introduce personal Spotify apps to eligible listeners once.
@@ -1135,6 +1137,10 @@ pub enum Action {
     ChooseCast(crate::casting::Settings),
     /// Rechecks the receiver being chosen with the fingerprint in the dialog.
     SubmitCastFingerprint,
+    /// Rechecks the receiver pinned to the fingerprint it presented.
+    TrustCastReceiver,
+    /// Whether a new self-hosted Cast receiver is trusted without asking.
+    TrustNewCastReceivers(bool),
     LibrarySettings {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: crate::subsonic::downloads::Settings,

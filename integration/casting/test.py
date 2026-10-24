@@ -51,6 +51,14 @@ def main():
         "environment":{"CAST_RECEIVER_PORT":str(cast_port),"CAST_RECEIVER_NAME":name+" Cast","PULSE_SERVER":"unix:/run/pulse/native"},
         "volumes":["pulse-runtime:/run/pulse:ro","cast-state:/state"],"depends_on":{"pulse":{"condition":"service_healthy"}},
         "healthcheck":{"test":["CMD","python3","/usr/local/bin/cast_receiver.py","--health"],"interval":"1s","timeout":"2s","retries":20}}
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        mpd_port = reservation.getsockname()[1]
+    services["mpd"] = {"image": IMAGE, "entrypoint": ["python3", "/usr/local/bin/mpd_receiver.py"],
+        "network_mode": "host", "init": True, "environment": {"MPD_PORT": str(mpd_port)},
+        "volumes": ["pulse-runtime:/run/pulse:ro"], "depends_on": {"pulse": {"condition": "service_healthy"}},
+        "healthcheck": {"test": ["CMD", "python3", "/usr/local/bin/mpd_receiver.py", "--health"],
+                        "interval": "1s", "timeout": "2s", "retries": 20}}
     services["music"]={"image":IMAGE,"entrypoint":["python3","/usr/local/bin/music-fixture.py"],"ports":["127.0.0.1::8080"]}
     hap_ports = {}
     for service, fault in [("hap", None), ("hap-bad-srp", "HAP_BAD_SRP"),
@@ -155,6 +163,15 @@ def main():
         rms=math.sqrt(sum(v*v for v in pcm)/len(pcm))
         assert rms>.005,"App AirPlay receiver produced no audio"
         (folder/"app-airplay-report.json").write_text(json.dumps({"source":"Actual App with synthetic Subsonic FLAC","pause_seek_resume":True,"rms":rms},indent=2)+"\n")
+        # The picker's check: unpinned, the software receiver is untrusted and
+        # presents exactly its own certificate fingerprint; pinned, it verifies.
+        cast_check=str(ROOT/"target/debug/examples/cast_check")
+        first=json.loads(run(cast_check,"127.0.0.1",str(cast_port),timeout=15))
+        assert first=={"trust":"untrusted","pinned":False,"presented":fingerprint.lower()},first
+        assert json.loads(run(cast_check,"127.0.0.1",str(cast_port),fingerprint,timeout=15))=={"trust":"verified"}
+        changed=json.loads(run(cast_check,"127.0.0.1",str(cast_port),"0"*64,timeout=15))
+        assert changed["trust"]=="untrusted" and changed["pinned"] and changed["presented"]==fingerprint.lower(),changed
+        (folder/"cast-check-report.json").write_text(json.dumps({"unpinned":first,"changed":changed},indent=2)+"\n")
         rejected=subprocess.run(cast_probe+["0"*64],capture_output=True,timeout=25)
         assert rejected.returncode!=0 and b"app_sent" not in rejected.stdout,"Untrusted receiver was accepted"
         capture=folder/"cast-output.f32"
@@ -174,6 +191,26 @@ def main():
         assert rms>.005,"Cast receiver produced no audio"
         report={"source":"Actual Sonicfast App with synthetic Subsonic FLAC","receiver":"Certificate-pinned software CastV2 target + mpv","rms":rms,"wrong_pin_rejected":True,"pause_seek_resume":True,"replay_after_end":True,"hardware_chromecast":False}
         (folder/"cast-report.json").write_text(json.dumps(report,indent=2)+"\n")
+        print(json.dumps(report,indent=2))
+        # MPD fetches the app's protected lease with its curl input and decodes it.
+        mpd_probe=[str(ROOT/"target/debug/examples/snapcast_probe"),"app-mpd","--music-url",f"http://127.0.0.1:{music_port}","--port",str(mpd_port)]
+        capture=folder/"mpd-output.f32"
+        with capture.open("wb") as audio:
+            recorder=subprocess.Popen(command+["exec","-T","--user","1000:1000","pulse","timeout","10","parec","--server=unix:/run/pulse/native","--device=casting_test.monitor","--format=float32le","--rate=44100","--channels=2"],stdout=audio,stderr=subprocess.PIPE)
+            proof=run_probe("app-mpd", *mpd_probe, timeout=25)
+            (folder/"mpd-probe.log").write_bytes(proof)
+            assert b'"cast_controls_exercised":true' in proof,"MPD pause/seek/resume proof did not run"
+            assert b'"cast_replayed":true' in proof,"Finished MPD song did not restart"
+            assert b'"output_auto_resumed":true' in proof and b'"paused_output_stayed_paused":true' in proof and b'"load_survived_output_change":true' in proof,"MPD output transition proof did not run"
+            _,errors=recorder.communicate(timeout=15)
+            assert recorder.returncode in (0,124),errors
+        pcm=array.array("f");pcm.frombytes(capture.read_bytes())
+        assert pcm and all(math.isfinite(v) for v in pcm)
+        rms=math.sqrt(sum(v*v for v in pcm)/len(pcm))
+        assert rms>.005,"MPD produced no audio"
+        version=run(*command,"exec","-T","mpd","mpd","--version").decode().splitlines()[0]
+        report={"source":"Actual Sonicfast App with synthetic Subsonic FLAC","receiver":version+" (curl input, pulse output)","rms":rms,"pause_seek_resume":True,"replay_after_end":True,"password_protected":False}
+        (folder/"mpd-report.json").write_text(json.dumps(report,indent=2)+"\n")
         print(json.dumps(report,indent=2))
     finally:
         if recorder is not None and recorder.poll() is None:

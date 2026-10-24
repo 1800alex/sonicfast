@@ -11105,6 +11105,8 @@ impl App {
             | Action::UseAirPlayPairing(_)
             | Action::ChooseCast(_)
             | Action::SubmitCastFingerprint
+            | Action::TrustCastReceiver
+            | Action::TrustNewCastReceivers(_)
             | Action::DiscoverOutputs
             | Action::EditCastingSettings { .. }
             | Action::EditSnapcastSettings { .. } => {}
@@ -13567,7 +13569,10 @@ mod tests {
         );
         app.subsonic_event(crate::subsonic::Event::CastCheck {
             attempt: first,
-            trust: Trust::Untrusted { pinned: false },
+            trust: Trust::Untrusted {
+                pinned: false,
+                presented: None,
+            },
         });
         assert!(matches!(app.dialog, Some(Dialog::CastFingerprint)));
         assert!(app.actions.is_empty());
@@ -13614,7 +13619,10 @@ mod tests {
         // Closing the dialog abandons the check.
         app.subsonic_event(crate::subsonic::Event::CastCheck {
             attempt: app.cast_check.attempt,
-            trust: Trust::Untrusted { pinned: true },
+            trust: Trust::Untrusted {
+                pinned: true,
+                presented: None,
+            },
         });
         assert!(matches!(app.dialog, Some(Dialog::CastFingerprint)));
         let abandoned = app.cast_check.attempt;
@@ -13625,6 +13633,68 @@ mod tests {
             trust: Trust::Verified,
         });
         assert!(app.actions.is_empty());
+        app.backend.shutdown();
+    }
+
+    #[test]
+    fn a_self_hosted_cast_receiver_can_be_trusted_by_the_fingerprint_it_presents() {
+        use crate::casting::{CheckStage, Kind, Settings as Output, Trust};
+        let mut app = test_app("cast-trust-on-first-use");
+        app.subsonic = true;
+        let receiver = |name: &str| Output {
+            output: Some(Kind::Chromecast),
+            host: "192.0.2.20".into(),
+            port: 8009,
+            name: name.into(),
+            allow_lan: true,
+            ..Default::default()
+        };
+        let untrusted = |pinned, fingerprint: String| Trust::Untrusted {
+            pinned,
+            presented: Some(fingerprint),
+        };
+        // #given an unverified receiver, the dialog offers the fingerprint it presented
+        app.subsonic_action(Action::ChooseCast(receiver("Garage")));
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: app.cast_check.attempt,
+            trust: untrusted(false, "aa".repeat(32)),
+        });
+        assert!(matches!(app.dialog, Some(Dialog::CastFingerprint)));
+        assert_eq!(app.cast_check.presented.as_deref(), Some(&*"aa".repeat(32)));
+        // #when the user trusts it, it is checked again pinned to that fingerprint
+        app.subsonic_action(Action::TrustCastReceiver);
+        assert_eq!(app.cast_check.stage, CheckStage::Checking);
+        assert_eq!(app.cast_check.settings.certificate_sha256, "aa".repeat(32));
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: app.cast_check.attempt,
+            trust: Trust::Verified,
+        });
+        app.apply_actions(&egui::Context::default());
+        assert_eq!(
+            app.settings.casting.cast_fingerprints.get("garage"),
+            Some(&"aa".repeat(32))
+        );
+
+        // #given automatic trust, a new receiver is pinned without a dialog
+        app.settings.casting.trust_new_cast_receivers = true;
+        app.subsonic_action(Action::ChooseCast(receiver("Den")));
+        let first = app.cast_check.attempt;
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: first,
+            trust: untrusted(false, "bb".repeat(32)),
+        });
+        assert!(app.dialog.is_none());
+        assert!(app.cast_check.attempt > first);
+        assert_eq!(app.cast_check.stage, CheckStage::Checking);
+        assert_eq!(app.cast_check.settings.certificate_sha256, "bb".repeat(32));
+
+        // #but a receiver whose saved fingerprint changed always asks
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: app.cast_check.attempt,
+            trust: untrusted(true, "cc".repeat(32)),
+        });
+        assert!(matches!(app.dialog, Some(Dialog::CastFingerprint)));
+        assert_eq!(app.cast_check.stage, CheckStage::Untrusted { pinned: true });
         app.backend.shutdown();
     }
 

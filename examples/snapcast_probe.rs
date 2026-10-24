@@ -44,6 +44,13 @@ enum Mode {
         #[arg(long, default_value_t = 5000)]
         port: u16,
     },
+    /// The app playing to an MPD server, which fetches the lease itself.
+    AppMpd {
+        #[arg(long)]
+        music_url: String,
+        #[arg(long, default_value_t = 6600)]
+        port: u16,
+    },
     Receive {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -107,18 +114,24 @@ async fn main() -> anyhow::Result<()> {
             }).await??;
         }
         Mode::AppSend { music_url, port } => {
-            tokio::task::spawn_blocking(move || app_send(music_url, port, None)).await??;
+            tokio::task::spawn_blocking(move || app_send(music_url, port, Target::Snapcast))
+                .await??;
+        }
+        Mode::AppMpd { music_url, port } => {
+            tokio::task::spawn_blocking(move || app_send(music_url, port, Target::Mpd)).await??;
         }
         Mode::AppCast {
             music_url,
             port,
             fingerprint,
         } => {
-            tokio::task::spawn_blocking(move || app_send(music_url, port, Some(fingerprint)))
-                .await??;
+            tokio::task::spawn_blocking(move || {
+                app_send(music_url, port, Target::Cast(fingerprint))
+            })
+            .await??;
         }
         Mode::AppAirplay { music_url, port } => {
-            tokio::task::spawn_blocking(move || app_send(music_url, port, Some(String::new())))
+            tokio::task::spawn_blocking(move || app_send(music_url, port, Target::AirPlay))
                 .await??;
         }
         Mode::Receive {
@@ -169,7 +182,16 @@ fn safe(error: libresonic::playback::OutputError) -> anyhow::Error {
     anyhow::anyhow!("Audio output: {error:?}")
 }
 
-fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow::Result<()> {
+/// Where the app proof sends its music.
+enum Target {
+    Snapcast,
+    AirPlay,
+    /// A Cast receiver pinned to this fingerprint.
+    Cast(String),
+    Mpd,
+}
+
+fn app_send(music_url: String, port: u16, target: Target) -> anyhow::Result<()> {
     use sonicfast::{
         app::{App, AppOptions},
         backend::{AuthStatus, Waker},
@@ -187,6 +209,18 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
         cache: base.join("cache"),
     };
     dirs.ensure()?;
+    use sonicfast::casting::Kind;
+    let kind = match &target {
+        Target::Snapcast => None,
+        Target::AirPlay => Some(Kind::AirPlay),
+        Target::Cast(_) => Some(Kind::Chromecast),
+        Target::Mpd => Some(Kind::Mpd),
+    };
+    // Some(pin) for every casting output; empty unless pinned Cast.
+    let fingerprint = kind.map(|_| match &target {
+        Target::Cast(pin) => pin.clone(),
+        _ => String::new(),
+    });
     let recover_pin = fingerprint
         .as_ref()
         .is_some_and(|pin| !pin.is_empty() && *pin != "0".repeat(64));
@@ -200,16 +234,13 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
         },
         casting: if let Some(pin) = &fingerprint {
             sonicfast::casting::Settings {
-                output: Some(if pin.is_empty() {
-                    sonicfast::casting::Kind::AirPlay
-                } else {
-                    sonicfast::casting::Kind::Chromecast
-                }),
+                output: kind,
                 host: "127.0.0.1".into(),
                 port,
                 name: "Docker Cast fixture".into(),
                 airplay2: false,
                 cast_fingerprints: Default::default(),
+                trust_new_cast_receivers: false,
                 allow_lan: true,
                 certificate_sha256: if recover_pin {
                     "0".repeat(64)
@@ -397,7 +428,8 @@ fn app_send(music_url: String, port: u16, fingerprint: Option<String>) -> anyhow
         "Output transition controls were not exercised"
     );
     let completed_position = app.local.position_ms;
-    let replay_cast = fingerprint.as_ref().is_some_and(|pin| !pin.is_empty());
+    // Receivers that decode the original must restart a finished song.
+    let replay_cast = matches!(target, Target::Cast(_) | Target::Mpd);
     if replay_cast {
         app.actions.push(Action::TogglePlay);
         loop {

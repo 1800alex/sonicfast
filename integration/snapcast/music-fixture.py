@@ -38,9 +38,26 @@ class Handler(BaseHTTPRequestHandler):
                 data["searchResult3"] = {"song": [], "artist": [], "album": []}
             payload = json.dumps({"subsonic-response": data}).encode()
             content_type = "application/json"
-        self.send_response(200)
+        # Original files offer byte ranges, as Navidrome's raw streams do, so
+        # receivers that fetch the original (MPD, Cast) can seek.
+        status = 200
+        if endpoint == "stream":
+            wanted = self.headers.get("Range", "")
+            if wanted.startswith("bytes=") and "," not in wanted:
+                first, _, last = wanted[6:].partition("-")
+                if first.isdigit() and int(first) < len(payload):
+                    end = min(int(last), len(payload) - 1) if last.isdigit() else len(payload) - 1
+                    if int(first) <= end:
+                        status = 206
+                        content_range = f"bytes {first}-{end}/{len(payload)}"
+                        payload = payload[int(first):end + 1]
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        if endpoint == "stream":
+            self.send_header("Accept-Ranges", "bytes")
+        if status == 206:
+            self.send_header("Content-Range", content_range)
         self.end_headers()
         try:
             self.wfile.write(payload)

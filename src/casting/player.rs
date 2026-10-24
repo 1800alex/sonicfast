@@ -7,18 +7,23 @@ use libresonic::{
 };
 use serde_json::{Value, json};
 use std::{
+    net::IpAddr,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::watch;
 
 pub enum Player {
-    Local { inner: Local, airplay: bool },
-    Cast(Remote),
+    Local {
+        inner: Local,
+        airplay: bool,
+    },
+    /// A receiver that fetches and decodes the original itself (Cast, MPD).
+    Remote(Remote),
 }
 impl Player {
     pub fn local(inner: Local, airplay: bool) -> Self {
@@ -29,24 +34,33 @@ impl Player {
         provider: Arc<dyn StreamProvider>,
         shared: Shared,
     ) -> Result<Self, PlaybackError> {
-        Ok(Self::Cast(Remote::new(client, provider, shared)?))
+        Ok(Self::Remote(Remote::new::<Cast>(client, provider, shared)?))
+    }
+    pub fn mpd(
+        client: Arc<Client>,
+        provider: Arc<dyn StreamProvider>,
+        shared: Shared,
+    ) -> Result<Self, PlaybackError> {
+        Ok(Self::Remote(Remote::new::<super::mpd::Device>(
+            client, provider, shared,
+        )?))
     }
     pub fn snapshot(&self) -> PlaybackState {
         match self {
             Self::Local { inner, .. } => inner.snapshot(),
-            Self::Cast(p) => p.state.borrow().clone(),
+            Self::Remote(p) => p.state.borrow().clone(),
         }
     }
     pub fn subscribe(&self) -> watch::Receiver<PlaybackState> {
         match self {
             Self::Local { inner, .. } => inner.subscribe(),
-            Self::Cast(p) => p.state.subscribe(),
+            Self::Remote(p) => p.state.subscribe(),
         }
     }
     pub fn load(&self, id: MediaId, play: bool) -> Result<(), PlaybackError> {
         match self {
             Self::Local { inner, .. } => inner.load(id, play),
-            Self::Cast(p) => p.send(Command::Load(id, play)),
+            Self::Remote(p) => p.send(Command::Load(id, play)),
         }
     }
     pub fn pause(&self) {
@@ -58,7 +72,7 @@ impl Player {
                     let _ = inner.seek(position);
                 }
             }
-            Self::Cast(p) => {
+            Self::Remote(p) => {
                 let _ = p.send(Command::Pause);
             }
         }
@@ -66,19 +80,19 @@ impl Player {
     pub fn play(&self) -> Result<(), PlaybackError> {
         match self {
             Self::Local { inner, .. } => inner.play(),
-            Self::Cast(p) => p.send(Command::Play),
+            Self::Remote(p) => p.send(Command::Play),
         }
     }
     pub fn seek(&self, ms: u64) -> Result<(), PlaybackError> {
         match self {
             Self::Local { inner, .. } => inner.seek(ms),
-            Self::Cast(p) => p.send(Command::Seek(ms)),
+            Self::Remote(p) => p.send(Command::Seek(ms)),
         }
     }
     pub fn stop(&self) {
         match self {
             Self::Local { inner, .. } => inner.stop(),
-            Self::Cast(p) => {
+            Self::Remote(p) => {
                 let _ = p.send(Command::Stop);
             }
         }
@@ -86,7 +100,7 @@ impl Player {
     pub fn set_volume(&self, v: u16) {
         match self {
             Self::Local { inner, .. } => inner.set_volume(v),
-            Self::Cast(p) => {
+            Self::Remote(p) => {
                 let _ = p.send(Command::Volume(v));
             }
         }
@@ -94,7 +108,7 @@ impl Player {
     pub async fn shutdown(self) -> Result<(), PlaybackError> {
         match self {
             Self::Local { inner, .. } => inner.shutdown().await,
-            Self::Cast(p) => p.shutdown().await,
+            Self::Remote(p) => p.shutdown().await,
         }
     }
 }
@@ -106,6 +120,132 @@ enum Command {
     Volume(u16),
     Stop,
 }
+
+/// A network receiver that plays a media lease URL and reports progress.
+/// Every call that returns state applies the receiver's own reply to it;
+/// an error means the receiver failed, stopped trusting us or was taken over.
+pub(super) trait Device: Sized {
+    /// Shown in status messages, e.g. "Playing on MPD".
+    const NAME: &'static str;
+    fn connect(shared: &Shared, deadline: Instant) -> Result<Self, ()>;
+    fn local_ip(&self) -> Result<IpAddr, ()>;
+    fn peer_ip(&self) -> Result<IpAddr, ()>;
+    fn volume(&mut self, volume: u16) -> Result<(), ()>;
+    /// Plays `url` from `state.position_ms`.
+    fn load(
+        &mut self,
+        url: &str,
+        mime: &str,
+        track: &libresonic::Track,
+        state: &mut PlaybackState,
+    ) -> Result<(), ()>;
+    /// Whether a song is loaded on the receiver for transport commands.
+    fn loaded(&self) -> bool;
+    fn pause(&mut self, state: &mut PlaybackState) -> Result<(), ()>;
+    fn resume(&mut self, state: &mut PlaybackState) -> Result<(), ()>;
+    /// Seeks to `state.position_ms`, staying paused when `state.phase` is.
+    fn seek(&mut self, state: &mut PlaybackState) -> Result<(), ()>;
+    fn status(&mut self, state: &mut PlaybackState) -> Result<(), ()>;
+    /// Stops and forgets the loaded song; best effort.
+    fn stop(&mut self);
+}
+
+/// Google Cast's Default Media Receiver, after device authentication or the pin.
+struct Cast {
+    connection: MediaConnection,
+    url: String,
+    session: Option<u64>,
+}
+impl Device for Cast {
+    const NAME: &'static str = "Chromecast";
+    fn connect(shared: &Shared, deadline: Instant) -> Result<Self, ()> {
+        let pin = shared.settings().certificate_sha256;
+        let connection = shared
+            .targets()
+            .into_iter()
+            .find_map(|target| MediaConnection::connect(target, &pin, deadline).ok())
+            .ok_or(())?;
+        Ok(Self {
+            connection,
+            url: String::new(),
+            session: None,
+        })
+    }
+    fn local_ip(&self) -> Result<IpAddr, ()> {
+        self.connection.local_ip().map_err(|_| ())
+    }
+    fn peer_ip(&self) -> Result<IpAddr, ()> {
+        self.connection.peer_ip().map_err(|_| ())
+    }
+    fn volume(&mut self, volume: u16) -> Result<(), ()> {
+        self.connection.volume(volume).map_err(|_| ())
+    }
+    fn load(
+        &mut self,
+        url: &str,
+        mime: &str,
+        track: &libresonic::Track,
+        state: &mut PlaybackState,
+    ) -> Result<(), ()> {
+        self.url = url.to_owned();
+        let status=self.connection.media(json!({"type":"LOAD","autoplay":true,"currentTime":state.position_ms as f64/1000.0,"media":{"contentId":url,"contentType":mime,"streamType":"BUFFERED","metadata":{"metadataType":3,"title":track.title,"artist":track.artists.iter().map(|a|a.name.as_str()).collect::<Vec<_>>().join(", "),"albumName":track.album.as_ref().map(|a|a.title.as_str()).unwrap_or("")}}})).map_err(|_|())?;
+        self.session = status["status"]
+            .as_array()
+            .and_then(|v| v.first())
+            .and_then(|s| s["mediaSessionId"].as_u64());
+        if self.session.is_none() {
+            return Err(());
+        }
+        apply_status(state, &status, &self.url)
+    }
+    fn loaded(&self) -> bool {
+        self.session.is_some()
+    }
+    fn pause(&mut self, state: &mut PlaybackState) -> Result<(), ()> {
+        self.request(state, |id| json!({"type":"PAUSE","mediaSessionId":id}))
+    }
+    fn resume(&mut self, state: &mut PlaybackState) -> Result<(), ()> {
+        self.request(state, |id| json!({"type":"PLAY","mediaSessionId":id}))
+    }
+    fn seek(&mut self, state: &mut PlaybackState) -> Result<(), ()> {
+        let seconds = state.position_ms as f64 / 1000.0;
+        let resume = if state.phase == Phase::Paused {
+            "PLAYBACK_PAUSE"
+        } else {
+            "PLAYBACK_START"
+        };
+        self.request(state, |id| json!({"type":"SEEK","mediaSessionId":id,"currentTime":seconds,"resumeState":resume}))
+    }
+    fn status(&mut self, state: &mut PlaybackState) -> Result<(), ()> {
+        let status = self
+            .connection
+            .media(json!({"type":"GET_STATUS"}))
+            .map_err(|_| ())?;
+        apply_status(state, &status, &self.url)
+    }
+    fn stop(&mut self) {
+        if let Some(id) = self.session.take() {
+            let _ = self
+                .connection
+                .media(json!({"type":"STOP","mediaSessionId":id}));
+        }
+        self.url.clear();
+    }
+}
+impl Cast {
+    fn request(
+        &mut self,
+        state: &mut PlaybackState,
+        message: impl FnOnce(u64) -> Value,
+    ) -> Result<(), ()> {
+        let Some(id) = self.session else {
+            return Ok(());
+        };
+        let status = self.connection.media(message(id)).map_err(|_| ())?;
+        apply_status(state, &status, &self.url)
+    }
+}
+
 pub struct Remote {
     commands: Option<mpsc::SyncSender<(u64, Command)>>,
     epoch: Arc<AtomicU64>,
@@ -114,7 +254,7 @@ pub struct Remote {
     task: Option<std::thread::JoinHandle<()>>,
 }
 impl Remote {
-    fn new(
+    fn new<D: Device + 'static>(
         client: Arc<Client>,
         provider: Arc<dyn StreamProvider>,
         shared: Shared,
@@ -128,9 +268,9 @@ impl Remote {
         let closing = closed.clone();
         let runtime = tokio::runtime::Handle::current();
         let task = std::thread::Builder::new()
-            .name("cast-media".into())
+            .name("remote-media".into())
             .spawn(move || {
-                run(
+                run::<D>(
                     rx,
                     updates,
                     client,
@@ -184,28 +324,21 @@ impl Drop for Remote {
         self.commands.take();
     }
 }
-struct Transport {
-    connection: MediaConnection,
+struct Transport<D> {
+    device: D,
     server: Server,
-    url: String,
-    session: Option<u64>,
 }
-impl Transport {
+impl<D: Device> Transport<D> {
     fn stop(&mut self) {
-        if let Some(id) = self.session.take() {
-            let _ = self
-                .connection
-                .media(json!({"type":"STOP","mediaSessionId":id}));
-        }
+        self.device.stop();
         self.server.revoke();
-        self.url.clear();
     }
 }
 struct Control {
     epoch: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
 }
-fn run(
+fn run<D: Device>(
     rx: mpsc::Receiver<(u64, Command)>,
     updates: watch::Sender<PlaybackState>,
     client: Arc<Client>,
@@ -216,7 +349,7 @@ fn run(
 ) {
     let Control { epoch, closed } = control;
     let mut state = PlaybackState::default();
-    let mut transport: Option<Transport> = None;
+    let mut transport: Option<Transport<D>> = None;
     let mut loaded = false;
     loop {
         if closed.load(Ordering::SeqCst) {
@@ -228,10 +361,10 @@ fn run(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         let active = match &command {
-            Some((id, Command::Volume(_))) => *id,
             Some((id, _)) => *id,
             None => epoch.load(Ordering::SeqCst),
         };
+        let current = || active == epoch.load(Ordering::SeqCst);
         let command = command.map(|(_, c)| c);
         let result = (|| -> Result<(), ()> {
             match command {
@@ -250,7 +383,7 @@ fn run(
                 Some(Command::Volume(volume)) => {
                     state.volume = volume;
                     if let Some(t) = &mut transport {
-                        t.connection.volume(volume).map_err(|_| ())?;
+                        t.device.volume(volume)?;
                     }
                 }
                 Some(Command::Stop) => {
@@ -264,15 +397,11 @@ fn run(
                     state.error = None;
                 }
                 Some(Command::Pause) => {
-                    if active == epoch.load(Ordering::SeqCst)
+                    if current()
                         && let Some(t) = &mut transport
-                        && let Some(id) = t.session
+                        && t.device.loaded()
                     {
-                        let status = t
-                            .connection
-                            .media(json!({"type":"PAUSE","mediaSessionId":id}))
-                            .map_err(|_| ())?;
-                        apply_status(&mut state, &status, &t.url)?;
+                        t.device.pause(&mut state)?;
                     }
                     state.phase = Phase::Paused;
                 }
@@ -287,12 +416,11 @@ fn run(
                     }
                     state.position_ms = state.duration_ms.map_or(ms, |d| ms.min(d));
                     state.generation = state.generation.wrapping_add(1);
-                    if active == epoch.load(Ordering::SeqCst)
+                    if current()
                         && let Some(t) = &mut transport
-                        && let Some(id) = t.session
+                        && t.device.loaded()
                     {
-                        let status=t.connection.media(json!({"type":"SEEK","mediaSessionId":id,"currentTime":state.position_ms as f64/1000.0,"resumeState":if state.phase==Phase::Paused{"PLAYBACK_PAUSE"}else{"PLAYBACK_START"}})).map_err(|_|())?;
-                        apply_status(&mut state, &status, &t.url)?;
+                        t.device.seek(&mut state)?;
                     }
                 }
                 Some(Command::Play) => {
@@ -309,15 +437,11 @@ fn run(
                     }
                     state.error = None;
                     if loaded {
-                        if active == epoch.load(Ordering::SeqCst)
+                        if current()
                             && let Some(t) = &mut transport
-                            && let Some(id) = t.session
+                            && t.device.loaded()
                         {
-                            let status = t
-                                .connection
-                                .media(json!({"type":"PLAY","mediaSessionId":id}))
-                                .map_err(|_| ())?;
-                            apply_status(&mut state, &status, &t.url)?;
+                            t.device.resume(&mut state)?;
                         }
                     } else {
                         state.phase = Phase::Loading;
@@ -325,20 +449,16 @@ fn run(
                 }
                 None => {
                     if loaded && let Some(t) = &mut transport {
-                        let status = t
-                            .connection
-                            .media(json!({"type":"GET_STATUS"}))
-                            .map_err(|_| ())?;
-                        apply_status(&mut state, &status, &t.url)?;
+                        t.device.status(&mut state)?;
                     }
                 }
             }
-            if closed.load(Ordering::SeqCst) || active != epoch.load(Ordering::SeqCst) {
+            if closed.load(Ordering::SeqCst) || !current() {
                 return Ok(());
             }
             if !loaded && state.phase == Phase::Loading {
                 updates.send_replace(state.clone());
-                shared.report("Connecting to Chromecast");
+                shared.report(&format!("Connecting to {}", D::NAME));
                 let track = runtime.block_on(async {
                     tokio::time::timeout(
                         Duration::from_secs(3),
@@ -349,52 +469,28 @@ fn run(
                     .map_err(|_| ())
                 })?;
                 if transport.is_none() {
-                    let targets = shared.targets();
-                    let until = std::time::Instant::now() + Duration::from_secs(3);
-                    let connection = targets
-                        .into_iter()
-                        .find_map(|target| {
-                            MediaConnection::connect(
-                                target,
-                                &shared.settings().certificate_sha256,
-                                until,
-                            )
-                            .ok()
-                        })
-                        .ok_or(())?;
-                    let local = connection.local_ip().map_err(|_| ())?;
-                    let peer = connection.peer_ip().map_err(|_| ())?;
+                    let device = D::connect(&shared, Instant::now() + Duration::from_secs(3))?;
+                    let local = device.local_ip()?;
+                    let peer = device.peer_ip()?;
                     let server = runtime
                         .block_on(Server::new(provider.clone(), local, peer))
                         .map_err(|_| ())?;
-                    transport = Some(Transport {
-                        connection,
-                        server,
-                        url: String::new(),
-                        session: None,
-                    });
+                    transport = Some(Transport { device, server });
                 }
-                if closed.load(Ordering::SeqCst) || active != epoch.load(Ordering::SeqCst) {
+                if closed.load(Ordering::SeqCst) || !current() {
                     return Ok(());
                 }
                 let t = transport.as_mut().unwrap();
-                t.url = t.server.issue(track.id.clone(), mime(&track));
+                let mime = mime(&track);
+                let url = t.server.issue(track.id.clone(), mime.clone());
                 state.duration_ms = track.duration_ms;
-                t.connection.volume(state.volume).map_err(|_| ())?;
-                let status=t.connection.media(json!({"type":"LOAD","autoplay":true,"currentTime":state.position_ms as f64/1000.0,"media":{"contentId":t.url,"contentType":mime(&track),"streamType":"BUFFERED","metadata":{"metadataType":3,"title":track.title,"artist":track.artists.iter().map(|a|a.name.as_str()).collect::<Vec<_>>().join(", "),"albumName":track.album.as_ref().map(|a|a.title.as_str()).unwrap_or("")}}})).map_err(|_|())?;
-                t.session = status["status"]
-                    .as_array()
-                    .and_then(|v| v.first())
-                    .and_then(|s| s["mediaSessionId"].as_u64());
-                if t.session.is_none() {
-                    return Err(());
-                }
-                apply_status(&mut state, &status, &t.url)?;
+                t.device.volume(state.volume)?;
+                t.device.load(&url, &mime, &track, &mut state)?;
                 loaded = true;
             }
             Ok(())
         })();
-        if closed.load(Ordering::SeqCst) || active != epoch.load(Ordering::SeqCst) {
+        if closed.load(Ordering::SeqCst) || !current() {
             continue;
         }
         if result.is_err() {
@@ -407,15 +503,19 @@ fn run(
             state.error = Some(PlaybackError::Output(
                 libresonic::playback::OutputError::DeviceLost,
             ));
-            shared
-                .report("Chromecast stopped; check receiver, codec and firewall, then press Play");
+            shared.report(&format!(
+                "{} stopped; check receiver, codec and firewall, then press Play",
+                D::NAME
+            ));
         } else {
-            shared.report(match state.phase {
-                Phase::Playing => "Playing on Chromecast (receiver decoding; EQ unavailable)",
-                Phase::Paused => "Chromecast paused",
-                Phase::Ended => "Chromecast track finished",
-                Phase::Stopped => "Chromecast stopped",
-                _ => "Chromecast buffering",
+            shared.report(&match state.phase {
+                Phase::Playing => {
+                    format!("Playing on {} (receiver decoding; EQ unavailable)", D::NAME)
+                }
+                Phase::Paused => format!("{} paused", D::NAME),
+                Phase::Ended => format!("{} track finished", D::NAME),
+                Phase::Stopped => format!("{} stopped", D::NAME),
+                _ => format!("{} buffering", D::NAME),
             });
         }
         updates.send_replace(state.clone());

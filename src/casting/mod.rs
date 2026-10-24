@@ -2,6 +2,7 @@
 pub mod airplay;
 mod discovery;
 mod media;
+mod mpd;
 mod player;
 pub use discovery::discover;
 pub use player::Player;
@@ -18,6 +19,8 @@ pub enum Kind {
     AirPlay,
     Chromecast,
     Snapcast,
+    /// A Music Player Daemon that fetches and decodes the original (ADR 014).
+    Mpd,
 }
 impl Kind {
     pub fn label(self) -> &'static str {
@@ -26,6 +29,19 @@ impl Kind {
             Self::AirPlay => "AirPlay",
             Self::Chromecast => "Chromecast",
             Self::Snapcast => "Snapcast",
+            Self::Mpd => "MPD",
+        }
+    }
+    /// A receiver on the trusted LAN, addressed by host and port.
+    pub fn is_lan(self) -> bool {
+        matches!(self, Self::AirPlay | Self::Chromecast | Self::Mpd)
+    }
+    /// The port a receiver of this kind normally listens on.
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::AirPlay => 5000,
+            Self::Mpd => 6600,
+            _ => 8009,
         }
     }
 }
@@ -45,6 +61,9 @@ pub struct Settings {
     /// Fingerprints the user entered for self-hosted Cast receivers, by
     /// [`Settings::receiver_key`], reused when that receiver is chosen again.
     pub cast_fingerprints: std::collections::BTreeMap<String, String>,
+    /// Pin a Cast receiver that is not genuine Google hardware to the
+    /// certificate it presents the first time. A changed one still asks.
+    pub trust_new_cast_receivers: bool,
 }
 impl Settings {
     pub fn kind(&self, snapcast_send: bool) -> Kind {
@@ -56,7 +75,7 @@ impl Settings {
     }
     pub fn playback_warning(&self, snapcast: &crate::snapcast::Settings) -> Option<&'static str> {
         (snapcast.receive && self.kind(snapcast.send) == Kind::Local).then_some(
-            "Snapcast Receive is active. Local songs are paused; enable Send as well, turn off Receive, or choose another output to play your queue.")
+            "Snapcast Receive is active. Local songs are paused; choose Snapcast or another output, or turn off Receive, to play your queue.")
     }
     /// Which remembered fingerprint belongs to this receiver: its name, which
     /// survives a new DHCP address, or its host when it has none. A wrong
@@ -80,6 +99,7 @@ impl Settings {
             certificate_sha256: String::new(),
             airplay2: receiver.airplay2,
             cast_fingerprints: self.cast_fingerprints.clone(),
+            trust_new_cast_receivers: self.trust_new_cast_receivers,
         };
         if receiver.kind == Kind::Chromecast
             && let Some(pin) = self.cast_fingerprints.get(&settings.receiver_key())
@@ -114,7 +134,7 @@ impl Settings {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(self.output, Some(Kind::AirPlay | Kind::Chromecast)) {
+        if !self.output.is_some_and(Kind::is_lan) {
             return Ok(());
         }
         if !self.allow_lan {
@@ -163,14 +183,16 @@ pub fn normalize_fingerprint(input: &str) -> Option<String> {
 }
 
 /// Whether a Cast receiver proved its identity before it was chosen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Trust {
     /// A genuine Google Cast device, or the pinned certificate.
     Verified,
     /// It answered but did not prove its identity: not genuine without a pin,
-    /// or a different certificate than the pinned one.
+    /// or a different certificate than the pinned one. `presented` is the
+    /// SHA-256 of the certificate it showed.
     Untrusted {
         pinned: bool,
+        presented: Option<String>,
     },
     Unreachable,
 }
@@ -179,7 +201,7 @@ impl Trust {
     pub fn combine(results: impl IntoIterator<Item = Trust>) -> Trust {
         results
             .into_iter()
-            .fold(Trust::Unreachable, |best, next| match (best, next) {
+            .fold(Trust::Unreachable, |best, next| match (&best, &next) {
                 (Trust::Verified, _) | (_, Trust::Verified) => Trust::Verified,
                 (Trust::Untrusted { .. }, _) => best,
                 _ => next,
@@ -202,8 +224,13 @@ pub fn check_cast(settings: &Settings) -> Trust {
     Trust::combine(targets.take(4).map(|target| {
         match crate::cast::MediaConnection::check(target, &settings.certificate_sha256, deadline) {
             Ok(()) => Trust::Verified,
-            Err(error) if error.is::<crate::cast::Untrusted>() => Trust::Untrusted { pinned },
-            Err(_) => Trust::Unreachable,
+            Err(error) => match error.downcast_ref::<crate::cast::Untrusted>() {
+                Some(untrusted) => Trust::Untrusted {
+                    pinned,
+                    presented: untrusted.presented.clone(),
+                },
+                None => Trust::Unreachable,
+            },
         }
     }))
 }
@@ -214,6 +241,8 @@ pub struct CastCheck {
     pub attempt: u64,
     pub settings: Settings,
     pub stage: CheckStage,
+    /// The fingerprint the receiver presented when it was not verified.
+    pub presented: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CheckStage {
@@ -337,7 +366,7 @@ impl Shared {
     }
     pub async fn configure(&self, settings: Settings) -> Result<(), String> {
         settings.validate()?;
-        let targets = if matches!(settings.output, Some(Kind::AirPlay | Kind::Chromecast)) {
+        let targets = if settings.output.is_some_and(Kind::is_lan) {
             tokio::time::timeout(
                 std::time::Duration::from_secs(3),
                 tokio::net::lookup_host((settings.host.as_str(), settings.port)),
@@ -355,16 +384,13 @@ impl Shared {
         state.targets = targets;
         // A failed or skipped cover fetch may be retried on the new output.
         state.art_requested = None;
-        state.status = if matches!(
-            state.settings.output,
-            Some(Kind::AirPlay | Kind::Chromecast)
-        ) && state.targets.is_empty()
-        {
-            "Receiver address unavailable; check the address or reconnect"
-        } else {
-            "Ready"
-        }
-        .into();
+        state.status =
+            if state.settings.output.is_some_and(Kind::is_lan) && state.targets.is_empty() {
+                "Receiver address unavailable; check the address or reconnect"
+            } else {
+                "Ready"
+            }
+            .into();
         drop(state);
         self.restore_pairing();
         Ok(())
@@ -384,6 +410,21 @@ mod tests {
             airplay2: false,
             reason: None,
         }
+    }
+    #[test]
+    fn an_mpd_output_needs_lan_consent_and_a_plain_host() {
+        let mut mpd = Settings {
+            output: Some(Kind::Mpd),
+            host: "pi.local".into(),
+            port: Kind::Mpd.default_port(),
+            ..Default::default()
+        };
+        assert_eq!(mpd.port, 6600);
+        assert!(mpd.validate().is_err(), "LAN casting must be allowed first");
+        mpd.allow_lan = true;
+        assert!(mpd.validate().is_ok());
+        mpd.host = "pi.local\npassword x".into();
+        assert!(mpd.validate().is_err());
     }
     #[test]
     fn pasted_fingerprints_normalize_to_lowercase_hex() {
@@ -433,9 +474,19 @@ mod tests {
     fn any_verified_target_wins_and_untrusted_beats_unreachable() {
         use Trust::*;
         assert_eq!(Trust::combine([Unreachable, Verified]), Verified);
+        let presented = Some("ab".repeat(32));
         assert_eq!(
-            Trust::combine([Unreachable, Untrusted { pinned: true }]),
-            Untrusted { pinned: true }
+            Trust::combine([
+                Unreachable,
+                Untrusted {
+                    pinned: true,
+                    presented: presented.clone()
+                }
+            ]),
+            Untrusted {
+                pinned: true,
+                presented
+            }
         );
         assert_eq!(Trust::combine([Unreachable]), Unreachable);
         assert_eq!(Trust::combine([]), Unreachable);

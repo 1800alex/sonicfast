@@ -1,12 +1,14 @@
 ---
-title: AirPlay and Chromecast
+title: AirPlay, Chromecast and MPD
 description: Choose a LAN audio output and control music from Sonicfast.
 nav_order: 9
 ---
 
-Open the speaker button in the bottom player bar to choose **Local**, a nearby
-**AirPlay** or **Chromecast** receiver, or the configured **Snapcast** sender.
-Choose **Find receivers** to scan again. Discovery does not send audio.
+Open the speaker button in the bottom player bar to choose **This device**, a
+nearby **AirPlay**, **Chromecast** or **MPD** receiver, or **Snapcast** once it is
+set up. Each receiver shows a small AirPlay, Cast or MPD tag; MPD servers using
+MPD's default announced name are shown by their host name. The picker looks for receivers when it opens; its refresh button scans
+again. Discovery does not send audio.
 
 Enable **Allow LAN casting** before selecting a network receiver. Choosing an
 output reconnects automatically at the current song position: playing music
@@ -80,16 +82,47 @@ original/source. Cast speaker groups and seamless independent handoff are not
 currently guaranteed. A disconnected or failing receiver stops playback; Sonicfast
 does not silently switch to local speakers.
 
+## MPD
+
+Select an MPD server (Music Player Daemon, for example on a Raspberry Pi) to play
+your queue through its speakers. It appears in the picker when MPD advertises
+itself over Avahi/Bonjour; otherwise enter its host and port (normally 6600) in
+**Settings → Casting** and choose **MPD** as the output.
+
+Like Chromecast, MPD fetches a temporary link to the original file from this
+computer and decodes it itself, so the firewall note above applies, MPD's codec
+support applies, and EQ/visualization do not. MPD needs its curl input plugin to
+play links; `mpd --version` lists `curl` under input plugins in standard Debian,
+Ubuntu, Raspberry Pi OS and Alpine packages. Its `bind_to_address` must accept
+connections from this computer (for example `"0.0.0.0"` on a trusted LAN).
+
+Playing replaces whatever is in MPD's own queue. Sonicfast's controls pause,
+seek, change MPD's volume (when its output has a mixer) and move to the next song
+when MPD finishes one. If another MPD client starts something else, Sonicfast
+stops rather than treating it as the end of your song. Seeking needs a music
+server that offers byte ranges for originals; otherwise the song keeps playing
+from where MPD is. Password-protected MPD servers are not supported yet.
+
 ## Manual receiver and self-hosted Cast targets
 
 Use **Settings → Casting** to enter an IP/hostname and port manually. AirPlay
 Classic normally uses 5000; newer AirPlay receivers commonly use 7000; Cast
-normally uses 8009. Snapcast's server/source settings
+normally uses 8009 and MPD 6600. Snapcast's server/source settings
 remain in its own section. Changes apply automatically: switches and selections
 apply immediately, while text/number edits apply after a short typing pause.
 Incomplete or invalid fields show **Not applied** and keep the last working
 configuration. You can leave Settings while a valid edit is waiting to apply.
 Use **Reconnect** only to retry an existing configuration.
+
+Choosing a Cast receiver checks it first. Genuine Google Cast devices connect
+directly. A receiver that cannot prove it is one, such as a self-hosted receiver,
+opens **Trust this Cast receiver?** with the SHA-256 fingerprint of the
+certificate it presented. Compare it with the receiver if you like, then choose
+**Trust receiver**, or **Paste another…** to enter one yourself. Sonicfast
+remembers the fingerprint for that receiver; if the receiver later presents a
+different certificate, it asks again (**Cast receiver changed**). Turn on **Trust
+self-hosted Cast receivers** (in the dialog or **Settings → Casting**) to trust a
+new receiver the first time without asking; a changed certificate still asks.
 
 **Receiver certificate** is blank for genuine Google Cast devices, which use
 Google's device-authentication chain. For an owner-operated software receiver,

@@ -22,7 +22,7 @@ server through [Libresonic](https://github.com/1800alex/libresonic).
   originals for playback. Availability comes from direct filesystem checks;
   no recursive library scan or persistent download index is required.
 - Send music to Snapserver and receive synchronized PCM/FLAC audio with the built-in Snapcast receiver.
-- Choose AirPlay Classic, PIN-paired AirPlay receivers (including Roku), or Chromecast from the output picker; see the [casting guide](docs/_guide/casting.md) for supported receivers and limits.
+- Choose AirPlay Classic, PIN-paired AirPlay receivers (including Roku), Chromecast or an MPD server from the output picker; see the [casting guide](docs/_guide/casting.md) for supported receivers and limits.
 - Choose audio outputs and use the retained EQ, visualizers, themes and classic
   Winamp mini-player.
 

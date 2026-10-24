@@ -20,7 +20,7 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     let rows = [
         RowText::new(
             "Output",
-            "Choose local playback, AirPlay, Chromecast or the configured Snapcast server.",
+            "Choose local playback, AirPlay, Chromecast, an MPD server or the configured Snapcast server.",
         ),
         RowText::new(
             "Trusted network",
@@ -32,11 +32,15 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
         ),
         RowText::new(
             "Receiver port",
-            "AirPlay Classic normally uses 5000; newer AirPlay receivers often use 7000. Chromecast normally uses 8009.",
+            "AirPlay Classic normally uses 5000; newer AirPlay receivers often use 7000. Chromecast normally uses 8009 and MPD 6600.",
         ),
         RowText::new(
             "Receiver certificate",
             "For a self-hosted Cast receiver, enter its SHA-256 certificate fingerprint. Leave blank for genuine Google Cast devices.",
+        ),
+        RowText::new(
+            "Trust self-hosted Cast receivers",
+            "Trust a Cast receiver that isn't genuine Google hardware the first time you choose it, and remember its certificate. A changed certificate always asks.",
         ),
         RowText::new("Playback status", app.casting_status.clone()),
         RowText::new(
@@ -60,25 +64,28 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
             egui::ComboBox::from_id_salt("casting-kind")
                 .selected_text(kind.label())
                 .show_ui(ui, |ui| {
-                    for k in [Kind::Local, Kind::AirPlay, Kind::Chromecast, Kind::Snapcast] {
-                        ui.selectable_value(&mut kind, k, k.label());
+                    for k in [
+                        Kind::Local,
+                        Kind::AirPlay,
+                        Kind::Chromecast,
+                        Kind::Mpd,
+                        Kind::Snapcast,
+                    ] {
+                        if k != Kind::Snapcast || before == k || app.settings.snapcast.can_send() {
+                            ui.selectable_value(&mut kind, k, k.label());
+                        }
                     }
                 });
             if before != kind {
                 immediate = true;
                 draft.output = Some(kind);
-                draft.port = if kind == Kind::AirPlay { 5000 } else { 8009 };
+                draft.port = kind.default_port();
             }
         });
         filtered_row(ui, &palette, needle, "Casting", &rows[1], |ui| {
             if widgets::switch(ui, &palette, "Allow LAN casting", &mut draft.allow_lan).changed() {
                 immediate = true;
-                if !draft.allow_lan
-                    && matches!(
-                        draft.kind(app.settings.snapcast.send),
-                        Kind::AirPlay | Kind::Chromecast
-                    )
-                {
+                if !draft.allow_lan && draft.kind(app.settings.snapcast.send).is_lan() {
                     draft.output = Some(Kind::Local);
                 }
             }
@@ -118,8 +125,15 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
                     );
                 });
         });
-        filtered_row(ui, &palette, needle, "Casting", &rows[5], |_| {});
-        filtered_row(ui, &palette, needle, "Casting", &rows[6], |ui| {
+        filtered_row(ui, &palette, needle, "Casting", &rows[5], |ui| {
+            let mut on = app.settings.casting.trust_new_cast_receivers;
+            if widgets::switch(ui, &palette, "Trust self-hosted Cast receivers", &mut on).changed()
+            {
+                app.actions.push(Action::TrustNewCastReceivers(on));
+            }
+        });
+        filtered_row(ui, &palette, needle, "Casting", &rows[6], |_| {});
+        filtered_row(ui, &palette, needle, "Casting", &rows[7], |ui| {
             if theme::soft_button(ui, &palette, None, "Reconnect", false).clicked() {
                 let mut settings = draft.clone();
                 settings.output = Some(settings.kind(app.settings.snapcast.send));
@@ -132,7 +146,7 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
             }
         });
         if draft.kind(app.settings.snapcast.send) == Kind::AirPlay {
-            filtered_row(ui, &palette, needle, "Casting", &rows[7], |ui| {
+            filtered_row(ui, &palette, needle, "Casting", &rows[8], |ui| {
                 if widgets::switch(
                     ui,
                     &palette,
@@ -153,11 +167,22 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
                 }
             });
         }
-        if draft.kind(app.settings.snapcast.send) == Kind::Chromecast {
+        let kind = draft.kind(app.settings.snapcast.send);
+        if matches!(kind, Kind::Chromecast | Kind::Mpd) {
             theme::subtle(
                 ui,
                 &palette,
-                "Chromecast decodes the original file. EQ and visualization apply to Local, AirPlay and Snapcast outputs. Allow the app’s media listener through your LAN firewall.",
+                &format!(
+                    "{} decodes the original file. EQ and visualization apply to Local, AirPlay and Snapcast outputs. Allow the app’s media listener through your LAN firewall.",
+                    kind.label()
+                ),
+            );
+        }
+        if kind == Kind::Mpd {
+            theme::subtle(
+                ui,
+                &palette,
+                "Playing replaces the MPD server's current queue. Password-protected MPD servers are not supported yet.",
             );
         }
         if let Err(error) = draft.validate_with_snapcast(&app.settings.snapcast) {
@@ -175,14 +200,16 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     }
     true
 }
-/// One output: its kind's icon and name, a check when it is in use, a
-/// spinner while it is being checked. Unsupported receivers are dimmed and
-/// say why on hover. Returns whether it was chosen.
+/// One output: its kind's icon and name, an optional dim kind tag, a check
+/// when it is in use and a spinner while it is being checked. Long names end
+/// in an ellipsis before the tag. Unsupported receivers are dimmed and say why
+/// on hover. Returns whether it was chosen.
 fn output_row(
     ui: &mut egui::Ui,
     palette: &theme::Palette,
     icon: Icon,
     name: &str,
+    tag: Option<&str>,
     state: RowState,
     reason: Option<&str>,
 ) -> bool {
@@ -217,15 +244,30 @@ fn output_row(
         ui,
         Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), Vec2::splat(20.0)),
     );
-    crate::bidi::paint_line(
-        &ui.painter().with_clip_rect(rect),
-        rect.left() + 44.0,
-        rect.right() - 36.0,
-        rect.center().y,
+    let painter = ui.painter().with_clip_rect(rect);
+    // The tag sits left of the check/spinner slot; the name ends before it.
+    let mut name_right = rect.right() - 34.0;
+    if let Some(tag) = tag {
+        let tag = painter.text(
+            pos2(name_right, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            tag,
+            theme::regular(11.0),
+            palette.secondary,
+        );
+        name_right = tag.left() - 8.0;
+    }
+    let left = rect.left() + 44.0;
+    let galley = widgets::ellipsized(
+        ui,
         name,
         theme::medium(14.0),
         color,
+        (name_right - left).max(0.0),
+        1,
     );
+    let at = pos2(left, rect.center().y - galley.size().y / 2.0);
+    painter.galley(at, galley, color);
     let mark = Rect::from_center_size(
         pos2(rect.right() - 18.0, rect.center().y),
         Vec2::splat(16.0),
@@ -253,9 +295,26 @@ enum RowState {
     Busy,
 }
 
-/// AirPlay before Cast, then by name; one list for the picker.
+/// The icon for an output kind, in the picker and on the player bar.
+pub(crate) fn kind_icon(kind: Kind) -> Icon {
+    match kind {
+        Kind::Local => Icon::Speaker,
+        Kind::AirPlay => Icon::Airplay,
+        Kind::Chromecast | Kind::Snapcast => Icon::Cast,
+        Kind::Mpd => Icon::Music,
+    }
+}
+
+/// AirPlay, then Cast, then MPD, each by name; one list for the picker.
 fn sorted_receivers(mut receivers: Vec<crate::casting::Receiver>) -> Vec<crate::casting::Receiver> {
-    receivers.sort_by_cached_key(|r| (r.kind != Kind::AirPlay, r.name.to_lowercase()));
+    receivers.sort_by_cached_key(|r| {
+        let order = match r.kind {
+            Kind::AirPlay => 0,
+            Kind::Chromecast => 1,
+            _ => 2,
+        };
+        (order, r.name.to_lowercase())
+    });
     receivers
 }
 
@@ -334,6 +393,7 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
                     &palette,
                     Icon::Speaker,
                     "This device",
+                    None,
                     state(active == Kind::Local),
                     None,
                 ) {
@@ -345,6 +405,7 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
                         &palette,
                         Icon::Cast,
                         "Snapcast",
+                        None,
                         state(active == Kind::Snapcast),
                         None,
                     )
@@ -367,17 +428,17 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
                                 } else {
                                     state(active == receiver.kind && here(&settings))
                                 };
-                                let icon = if receiver.kind == Kind::AirPlay {
-                                    Icon::Airplay
-                                } else {
-                                    Icon::Cast
-                                };
+                                let icon = kind_icon(receiver.kind);
                                 ui.push_id((&host, port, receiver.kind.label()), |ui| {
                                     if output_row(
                                         ui,
                                         &palette,
                                         icon,
                                         &receiver.name,
+                                        Some(match receiver.kind {
+                                            Kind::Chromecast => "Cast",
+                                            kind => kind.label(),
+                                        }),
                                         row,
                                         receiver.reason.as_deref(),
                                     ) {
@@ -400,7 +461,7 @@ pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
                     let mut allow = false;
                     ui.horizontal(|ui| {
                         ui.add_space(6.0);
-                        ui.label("Find AirPlay and Cast receivers");
+                        ui.label("Find AirPlay, Cast and MPD receivers");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if widgets::switch(ui, &palette, "Allow LAN casting", &mut allow)
                                 .changed()

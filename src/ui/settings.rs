@@ -2226,10 +2226,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let about = gettext(locale, "About");
-    let built_with = gettext(
-        locale,
-        "Built with Rust, egui, and librespot. Not affiliated with Spotify.",
-    );
+    let built_with = if app.subsonic {
+        "An OpenSubsonic music player built with Rust and egui, forked from Spotifast.".into()
+    } else {
+        gettext(
+            locale,
+            "Built with Rust, egui, and librespot. Not affiliated with Spotify.",
+        )
+    };
     let check_for_updates = gettext(locale, "Check for updates");
     let checking = gettext(locale, "Checking…");
     let keyboard_shortcuts = gettext(locale, "Keyboard shortcuts");
@@ -2245,7 +2249,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             format!("{keyboard_shortcuts} {source_code}"),
         ),
     ];
-    if !app.subsonic && section_matches(&needle, &about, &about_rows) {
+    if section_matches(&needle, &about, &about_rows) {
         any_visible = true;
         section(ui, &palette, &about, |ui| {
             ui.horizontal(|ui| {
@@ -2274,8 +2278,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 } else {
                     &check_for_updates
                 };
-                if theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false)
-                    .clicked()
+                // Sonicfast keeps self-updates disabled.
+                if !app.subsonic
+                    && theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false)
+                        .clicked()
                     && !app.update_checking
                 {
                     app.actions.push(Action::CheckForUpdates);
@@ -2736,6 +2742,91 @@ mod tests {
             app.actions
                 .iter()
                 .any(|action| matches!(action, Action::DeleteEqPreset(name) if name == "AirPods"))
+        );
+        app.backend.shutdown();
+    }
+
+    /// Sonicfast shows its version and Snapcast help in Settings, without the
+    /// disabled self-updater.
+    #[test]
+    fn sonicfast_settings_show_the_version_and_snapcast_help() {
+        use crate::model::{Action, Dialog};
+        use egui::accesskit::{Action as AccessibleAction, ActionRequest, TreeId};
+        let root = std::env::temp_dir().join(format!(
+            "sonicfast-settings-about-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let mut app = crate::app::App::new(
+            &crate::backend::Waker::default(),
+            crate::paths::AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            crate::settings::Settings::default(),
+            crate::app::AppOptions {
+                media_controls: false,
+                restore_sign_in: false,
+                tray: false,
+                autostart: false,
+            },
+        );
+        app.subsonic = true;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::install(&ctx);
+        let frame = |app: &mut crate::app::App, events| {
+            app.actions.clear();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 30000.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| super::show(app, ui),
+            );
+            output.textures_delta.clear();
+            output.platform_output.accesskit_update.unwrap()
+        };
+        frame(&mut app, vec![]);
+        let tree = frame(&mut app, vec![]);
+        // Buttons carry a label; static text carries its value.
+        let labels: Vec<String> = tree
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label().or(node.value()).map(str::to_owned))
+            .collect();
+        let version = format!("Sonicfast {}", env!("CARGO_PKG_VERSION"));
+        assert!(labels.iter().any(|l| l == &version), "{labels:?}");
+        assert!(labels.iter().any(|l| l == "Release notes"));
+        assert!(!labels.iter().any(|l| l == "Check for updates"));
+        let (help, _) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("How Snapcast works"))
+            .expect("Snapcast help button");
+        frame(
+            &mut app,
+            vec![egui::Event::AccessKitActionRequest(ActionRequest {
+                target_tree: TreeId::ROOT,
+                target_node: *help,
+                action: AccessibleAction::Click,
+                data: None,
+            })],
+        );
+        assert!(
+            app.actions
+                .iter()
+                .any(|a| matches!(a, Action::ShowDialog(Dialog::SnapcastHelp))),
+            "{:?}",
+            app.actions
         );
         app.backend.shutdown();
     }

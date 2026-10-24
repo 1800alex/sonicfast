@@ -25,10 +25,11 @@ network codec, independent of the MP3/FLAC/M4A original music file.
 
 ## Send music
 
-1. Open **Settings → Snapcast**.
+1. Open **Settings → Snapcast**. **How Snapcast works** there summarizes this page.
 2. Enter the Snapcast server's hostname/IP address and source port (normally 4953).
-3. Enable **Trusted network** and **Send music**. Changes apply automatically.
-4. Press Play on a song from your music library.
+3. Enable **Trusted network** and **Snapcast output**. Snapcast now appears in the
+   player's output button; it is hidden there until both are on and the server is valid.
+4. Choose **Snapcast** from the output button, then press Play on a song.
 5. In Snapweb or your existing Snapcast controller, assign the desired receiver
    group to the **Sonicfast** stream.
 
@@ -67,10 +68,10 @@ change receiver volume or mute it. Received audio is passed through without
 applying the sender EQ again. It does not populate the local song queue, create
 song metadata or submit local scrobbles.
 
-Enable **both Send and Receive** to hear your own source in sync with other
-Snapcast clients. Receive-only mode suspends the Local song queue and displays
-a warning. Enable Send, turn off Receive, or select another output to play your
-queue. Explicitly selecting Local turns off Receive and shows a notice.
+Choose **Snapcast** as the output and enable **Receive** to hear your own source
+in sync with other Snapcast clients. Receive-only mode suspends the Local song
+queue and displays a warning. Choose Snapcast or another output, or turn off
+Receive, to play your queue. Explicitly selecting Local turns off Receive and shows a notice.
 Otherwise output changes preserve the selected song, position and play/pause
 state, including a song that is still loading. AirPlay/Cast can coexist with the
 receiver; a notice explains that received audio still plays through the receiver
@@ -107,7 +108,7 @@ and Receive. Settings apply automatically. The tone is original synthetic audio.
 Snapweb at [http://127.0.0.1:1781](http://127.0.0.1:1781).
 
 To send your own music instead, first run `make snapcast-smoke-stop-tone`, then
-use **source port 4993** and enable Send. The same machine can enable Receive too.
+use **source port 4993**, enable Snapcast output and choose Snapcast as the output. The same machine can enable Receive too.
 Only one source should feed a TCP input at a time.
 
 `make snapcast-smoke-down` stops this separate environment and retains its server

@@ -28,6 +28,9 @@ ADR 013 extends AirPlay to native HomeKit-style PIN pairing and single-receiver
 encrypted audio, including Roku discovery. Keep pairing keys in protected storage,
 reject stale/cancelled pairing results, verify both pairing proofs and receiver
 signatures, and retain the independent encrypted receiver/negative Docker tests.
+ADR 014 adds an MPD output: MPD fetches the Cast-style media lease over the MPD
+protocol (`src/casting/mpd.rs`); Cast and MPD share the remote loop in
+`src/casting/player.rs`. `make casting-test` includes a real MPD.
 Run `sonicfast` for OpenSubsonic; `sonicfast-legacy` is the retained Spotify/demo comparison binary.
 This intentional OpenSubsonic fork of Spotifast supersedes inherited Spotify-only policy.
 Application/crate/packaging branding is Sonicfast. Preserve upstream attribution, real
