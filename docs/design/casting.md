@@ -156,3 +156,34 @@ and the production documentation build/link check. The installed stable Rust
 override was used. The first extended Cast harness relied on a per-player
 generation counter across player replacement; its check now observes resumed
 playback progress, which also works after fingerprint-error recovery.
+
+## Icon picker and checked Cast selection (2026-10-24)
+
+The owner asked for a cleaner output picker: icon rows only, no per-receiver
+explanatory text. It is now a menu-frame popup matching the Connect device
+picker: speaker "This device", cast "Snapcast" (listed only while it is the
+output or `snapcast::Settings::can_send` holds: trusted network on and a valid
+server), then discovered receivers, AirPlay before Cast, with AirPlay (Lucide
+`airplay`, ISC) and cast icons. Unsupported receivers are dimmed and explain
+themselves on hover. The picker scans once each time it opens with LAN casting
+on; with it off, a single switch row grants that consent.
+
+Choosing a Cast receiver no longer routes straight to it. `Action::ChooseCast`
+first runs `casting::check_cast` off the UI thread: TLS plus Google device
+authentication (or the pin), without launching the media app. `MediaConnection`
+marks identity failures as `cast::Untrusted`, so an unreachable receiver toasts
+while an unverified one opens the "Verify Cast receiver" dialog. A pasted
+fingerprint (any case, `:`/space separated) is normalized and rechecked; only a
+verified result routes the output. Applying a pinned Cast output remembers the
+pin in `casting::Settings::cast_fingerprints`, keyed by receiver name (host when
+unnamed), so the receiver keeps it across DHCP changes; a mismatched saved pin
+reopens the dialog. A wrong key can only fail the pin check, never trust a
+receiver. Checks carry an attempt number, and closing the dialog invalidates
+the pending check. Fingerprints are public certificate hashes, not credentials.
+
+Evidence: unit tests for normalization, per-receiver memory, result combining,
+Snapcast offering and the app state machine (stale result, untrusted dialog,
+invalid paste, verified route, closed dialog); `make casting-test` passed with
+the refactored connect path (pinned software target, wrong pin rejected);
+`examples/casting_ui.rs` captures reviewed the picker and dialog in dark/light.
+The new check flow has not been run against a real self-hosted Cast receiver.

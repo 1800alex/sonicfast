@@ -423,6 +423,9 @@ pub struct App {
     pub casting_scanning: bool,
     pub airplay_pairing: crate::casting::airplay::pairing::Status,
     pub airplay_pin: String,
+    pub cast_check: crate::casting::CastCheck,
+    /// The fingerprint being typed in the Cast dialog; saved only once verified.
+    pub cast_fingerprint: String,
     pub casting_draft: Option<(crate::casting::Settings, Instant)>,
     pub snapcast_draft: Option<(crate::snapcast::Settings, Instant)>,
     pub auth: AuthStatus,
@@ -1149,6 +1152,8 @@ impl App {
             casting_scanning: false,
             airplay_pairing: Default::default(),
             airplay_pin: String::new(),
+            cast_check: Default::default(),
+            cast_fingerprint: String::new(),
             casting_draft: None,
             snapcast_draft: None,
             palette,
@@ -11098,6 +11103,8 @@ impl App {
             | Action::SubmitAirPlayPin { .. }
             | Action::CancelAirPlayPairing(_)
             | Action::UseAirPlayPairing(_)
+            | Action::ChooseCast(_)
+            | Action::SubmitCastFingerprint
             | Action::DiscoverOutputs
             | Action::EditCastingSettings { .. }
             | Action::EditSnapcastSettings { .. } => {}
@@ -13530,6 +13537,98 @@ mod tests {
     }
 
     #[test]
+    fn a_cast_receiver_is_checked_first_and_a_pasted_fingerprint_is_remembered() {
+        use crate::casting::{CheckStage, Kind, Settings as Output, Trust};
+        let mut app = test_app("cast-fingerprint");
+        app.subsonic = true;
+        let receiver = Output {
+            output: Some(Kind::Chromecast),
+            host: "192.0.2.20".into(),
+            port: 8009,
+            name: "Garage".into(),
+            allow_lan: true,
+            ..Default::default()
+        };
+        app.subsonic_action(Action::ChooseCast(receiver.clone()));
+        let first = app.cast_check.attempt;
+        assert_eq!(app.cast_check.stage, CheckStage::Checking);
+        assert_ne!(
+            app.settings.casting.output,
+            Some(Kind::Chromecast),
+            "The check must pass before the output changes"
+        );
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: first - 1,
+            trust: Trust::Verified,
+        });
+        assert!(
+            app.actions.is_empty(),
+            "A stale check must not switch outputs"
+        );
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: first,
+            trust: Trust::Untrusted { pinned: false },
+        });
+        assert!(matches!(app.dialog, Some(Dialog::CastFingerprint)));
+        assert!(app.actions.is_empty());
+
+        app.cast_fingerprint = "not hex".into();
+        app.subsonic_action(Action::SubmitCastFingerprint);
+        assert_eq!(
+            app.cast_check.stage,
+            CheckStage::Untrusted { pinned: false }
+        );
+
+        app.cast_fingerprint = vec!["AB"; 32].join(":");
+        app.subsonic_action(Action::SubmitCastFingerprint);
+        let second = app.cast_check.attempt;
+        assert!(second > first);
+        assert_eq!(app.cast_check.stage, CheckStage::Checking);
+        assert_eq!(app.cast_check.settings.certificate_sha256, "ab".repeat(32));
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: second,
+            trust: Trust::Verified,
+        });
+        assert!(app.dialog.is_none() && app.cast_fingerprint.is_empty());
+        app.apply_actions(&egui::Context::default());
+        assert_eq!(app.settings.casting.output, Some(Kind::Chromecast));
+        assert_eq!(app.settings.casting.certificate_sha256, "ab".repeat(32));
+        assert_eq!(
+            app.settings.casting.cast_fingerprints.get("garage"),
+            Some(&"ab".repeat(32))
+        );
+        // Chosen again later, it is checked with the remembered fingerprint.
+        let found = crate::casting::Receiver {
+            kind: Kind::Chromecast,
+            name: "Garage".into(),
+            address: "192.0.2.21:8009".parse().unwrap(),
+            supported: true,
+            pairing: false,
+            airplay2: false,
+            reason: None,
+        };
+        app.subsonic_action(Action::ChooseCast(
+            app.settings.casting.for_receiver(&found),
+        ));
+        assert_eq!(app.cast_check.settings.certificate_sha256, "ab".repeat(32));
+        // Closing the dialog abandons the check.
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: app.cast_check.attempt,
+            trust: Trust::Untrusted { pinned: true },
+        });
+        assert!(matches!(app.dialog, Some(Dialog::CastFingerprint)));
+        let abandoned = app.cast_check.attempt;
+        app.subsonic_action(Action::CloseDialog);
+        assert!(app.dialog.is_none());
+        app.subsonic_event(crate::subsonic::Event::CastCheck {
+            attempt: abandoned,
+            trust: Trust::Verified,
+        });
+        assert!(app.actions.is_empty());
+        app.backend.shutdown();
+    }
+
+    #[test]
     fn cancelling_or_selecting_local_cannot_later_apply_a_paired_receiver() {
         use crate::casting::{
             Kind, Settings as Output,
@@ -13708,6 +13807,9 @@ mod tests {
             ..Default::default()
         };
         app.subsonic_action(Action::CastingSettings(output.clone()));
+        // Applying a pinned Cast receiver also remembers its pin.
+        let mut output = output;
+        output.remember_fingerprint();
         let mut edited = output.clone();
         edited.certificate_sha256 = "b".repeat(12);
         app.apply(
@@ -13741,7 +13843,9 @@ mod tests {
         // Flush is independent of whether Settings is still the visible page.
         app.flush_audio_settings(&ctx, Instant::now() + Duration::from_secs(1));
         app.apply_actions(&ctx);
+        edited.remember_fingerprint();
         assert_eq!(app.settings.casting, edited);
+        assert_eq!(app.settings.casting.cast_fingerprints.len(), 1);
         assert!(app.casting_draft.is_none());
         app.backend.shutdown();
     }

@@ -35,6 +35,10 @@ pub enum Request {
         pin: crate::casting::airplay::pairing::Pin,
     },
     CancelAirPlayPairing(u64),
+    CheckCast {
+        attempt: u64,
+        settings: crate::casting::Settings,
+    },
     Configure {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: downloads::Settings,
@@ -74,6 +78,10 @@ pub enum QueueAction {
 pub enum Event {
     AirPlayPairing(crate::casting::airplay::pairing::Status),
     CastingStatus(String),
+    CastCheck {
+        attempt: u64,
+        trust: crate::casting::Trust,
+    },
     Receivers(Result<Vec<crate::casting::Receiver>, String>),
     Snapcast(crate::snapcast::Status),
     LibraryRefresh,

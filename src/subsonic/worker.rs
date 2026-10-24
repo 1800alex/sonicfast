@@ -539,6 +539,13 @@ pub async fn run(
                         casting.finish_pairing(attempt, pin);
                         emit(&tx, &wake, E::Subsonic(super::Event::AirPlayPairing(casting.pairing_status())));
                     }
+                    b::Command::Subsonic(Request::CheckCast { attempt, settings }) => {
+                        let tx = tx.clone(); let wake = wake.clone();
+                        tokio::spawn(async move {
+                            let trust = tokio::task::spawn_blocking(move || crate::casting::check_cast(&settings)).await.unwrap_or(crate::casting::Trust::Unreachable);
+                            emit(&tx, &wake, E::Subsonic(super::Event::CastCheck { attempt, trust }));
+                        });
+                    }
                     b::Command::Subsonic(Request::CancelAirPlayPairing(attempt)) => {
                         casting.cancel_pairing(attempt);
                     }

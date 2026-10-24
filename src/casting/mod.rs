@@ -42,6 +42,9 @@ pub struct Settings {
     pub certificate_sha256: String,
     /// Authenticated AirPlay transport, negotiated by newer audio receivers.
     pub airplay2: bool,
+    /// Fingerprints the user entered for self-hosted Cast receivers, by
+    /// [`Settings::receiver_key`], reused when that receiver is chosen again.
+    pub cast_fingerprints: std::collections::BTreeMap<String, String>,
 }
 impl Settings {
     pub fn kind(&self, snapcast_send: bool) -> Kind {
@@ -54,6 +57,49 @@ impl Settings {
     pub fn playback_warning(&self, snapcast: &crate::snapcast::Settings) -> Option<&'static str> {
         (snapcast.receive && self.kind(snapcast.send) == Kind::Local).then_some(
             "Snapcast Receive is active. Local songs are paused; enable Send as well, turn off Receive, or choose another output to play your queue.")
+    }
+    /// Which remembered fingerprint belongs to this receiver: its name, which
+    /// survives a new DHCP address, or its host when it has none. A wrong
+    /// match only fails the pin check, so it can never trust a receiver.
+    pub fn receiver_key(&self) -> String {
+        let name = self.name.trim();
+        if name.is_empty() {
+            self.host.to_ascii_lowercase()
+        } else {
+            name.to_lowercase()
+        }
+    }
+    /// The output for choosing `receiver`, with any fingerprint remembered for it.
+    pub fn for_receiver(&self, receiver: &Receiver) -> Settings {
+        let mut settings = Settings {
+            output: Some(receiver.kind),
+            host: receiver.address.ip().to_string(),
+            port: receiver.address.port(),
+            name: receiver.name.clone(),
+            allow_lan: self.allow_lan,
+            certificate_sha256: String::new(),
+            airplay2: receiver.airplay2,
+            cast_fingerprints: self.cast_fingerprints.clone(),
+        };
+        if receiver.kind == Kind::Chromecast
+            && let Some(pin) = self.cast_fingerprints.get(&settings.receiver_key())
+        {
+            settings.certificate_sha256.clone_from(pin);
+        }
+        settings
+    }
+    /// Records (or, when blank, forgets) the current Cast receiver's fingerprint.
+    pub fn remember_fingerprint(&mut self) {
+        if self.output != Some(Kind::Chromecast) {
+            return;
+        }
+        let key = self.receiver_key();
+        if self.certificate_sha256.is_empty() {
+            self.cast_fingerprints.remove(&key);
+        } else if self.cast_fingerprints.len() < 64 || self.cast_fingerprints.contains_key(&key) {
+            self.cast_fingerprints
+                .insert(key, self.certificate_sha256.to_ascii_lowercase());
+        }
     }
     pub fn validate_with_snapcast(
         &self,
@@ -105,6 +151,81 @@ impl Settings {
         Ok(())
     }
 }
+/// A SHA-256 certificate fingerprint as pasted (any case, with or without
+/// `:`/space separators), as 64 lowercase hex digits.
+pub fn normalize_fingerprint(input: &str) -> Option<String> {
+    let hex: String = input
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
+}
+
+/// Whether a Cast receiver proved its identity before it was chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trust {
+    /// A genuine Google Cast device, or the pinned certificate.
+    Verified,
+    /// It answered but did not prove its identity: not genuine without a pin,
+    /// or a different certificate than the pinned one.
+    Untrusted {
+        pinned: bool,
+    },
+    Unreachable,
+}
+impl Trust {
+    /// One answer for a receiver reachable at several addresses.
+    pub fn combine(results: impl IntoIterator<Item = Trust>) -> Trust {
+        results
+            .into_iter()
+            .fold(Trust::Unreachable, |best, next| match (best, next) {
+                (Trust::Verified, _) | (_, Trust::Verified) => Trust::Verified,
+                (Trust::Untrusted { .. }, _) => best,
+                _ => next,
+            })
+    }
+}
+
+/// Connects to the chosen Cast receiver and checks its identity without
+/// launching anything on it. Blocking; run off the UI thread.
+pub fn check_cast(settings: &Settings) -> Trust {
+    use std::net::ToSocketAddrs;
+    if settings.validate().is_err() || settings.output != Some(Kind::Chromecast) {
+        return Trust::Unreachable;
+    }
+    let Ok(targets) = (settings.host.as_str(), settings.port).to_socket_addrs() else {
+        return Trust::Unreachable;
+    };
+    let pinned = !settings.certificate_sha256.is_empty();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    Trust::combine(targets.take(4).map(|target| {
+        match crate::cast::MediaConnection::check(target, &settings.certificate_sha256, deadline) {
+            Ok(()) => Trust::Verified,
+            Err(error) if error.is::<crate::cast::Untrusted>() => Trust::Untrusted { pinned },
+            Err(_) => Trust::Unreachable,
+        }
+    }))
+}
+
+/// The Cast receiver being checked before it becomes the output.
+#[derive(Clone, Debug, Default)]
+pub struct CastCheck {
+    pub attempt: u64,
+    pub settings: Settings,
+    pub stage: CheckStage,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckStage {
+    #[default]
+    Idle,
+    Checking,
+    Untrusted {
+        pinned: bool,
+    },
+    Unreachable,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Receiver {
     pub kind: Kind,
@@ -253,6 +374,72 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn cast(name: &str, host: &str) -> Receiver {
+        Receiver {
+            kind: Kind::Chromecast,
+            name: name.into(),
+            address: SocketAddr::new(host.parse().unwrap(), 8009),
+            supported: true,
+            pairing: false,
+            airplay2: false,
+            reason: None,
+        }
+    }
+    #[test]
+    fn pasted_fingerprints_normalize_to_lowercase_hex() {
+        let hex = "ab".repeat(32);
+        let colons = vec!["AB"; 32].join(":");
+        assert_eq!(
+            normalize_fingerprint(&colons).as_deref(),
+            Some(hex.as_str())
+        );
+        assert_eq!(
+            normalize_fingerprint(&format!("  {} ", "AB ".repeat(32))).as_deref(),
+            Some(hex.as_str())
+        );
+        for bad in ["", "abc", &"zz".repeat(32), &"ab".repeat(33)] {
+            assert_eq!(normalize_fingerprint(bad), None, "{bad}");
+        }
+    }
+    #[test]
+    fn a_remembered_fingerprint_follows_its_receiver_only() {
+        let mut current = Settings {
+            allow_lan: true,
+            ..Default::default()
+        };
+        let den = current.for_receiver(&cast("Den Speaker", "192.0.2.5"));
+        assert_eq!(den.output, Some(Kind::Chromecast));
+        assert!(den.certificate_sha256.is_empty());
+        let mut pinned = den.clone();
+        pinned.certificate_sha256 = "a".repeat(64);
+        pinned.remember_fingerprint();
+        current.cast_fingerprints = pinned.cast_fingerprints.clone();
+        // A new address (DHCP) keeps the pin; another receiver does not get it.
+        let moved = current.for_receiver(&cast("den speaker", "192.0.2.9"));
+        assert_eq!(moved.certificate_sha256, "a".repeat(64));
+        assert!(
+            current
+                .for_receiver(&cast("Kitchen", "192.0.2.5"))
+                .certificate_sha256
+                .is_empty()
+        );
+        // Clearing the pin for a receiver forgets it.
+        let mut cleared = moved;
+        cleared.certificate_sha256.clear();
+        cleared.remember_fingerprint();
+        assert!(cleared.cast_fingerprints.is_empty());
+    }
+    #[test]
+    fn any_verified_target_wins_and_untrusted_beats_unreachable() {
+        use Trust::*;
+        assert_eq!(Trust::combine([Unreachable, Verified]), Verified);
+        assert_eq!(
+            Trust::combine([Unreachable, Untrusted { pinned: true }]),
+            Untrusted { pinned: true }
+        );
+        assert_eq!(Trust::combine([Unreachable]), Unreachable);
+        assert_eq!(Trust::combine([]), Unreachable);
+    }
     #[test]
     fn old_settings_migrate_snapcast_and_casting_rejects_credentials_without_consent() {
         let old: Settings = serde_json::from_str("{}").unwrap();

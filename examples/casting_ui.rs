@@ -22,14 +22,14 @@ impl eframe::App for Review {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.app.background_frame(&ctx);
-        self.app.auth = if (0..=8).contains(&self.stage) {
+        self.app.auth = if (0..=9).contains(&self.stage) {
             AuthStatus::Connected {
                 username: "Visual fixture".into(),
             }
         } else {
             AuthStatus::SignedOut
         };
-        self.app.user = if (0..=8).contains(&self.stage) {
+        self.app.user = if (0..=9).contains(&self.stage) {
             Some(
                 serde_json::from_value(
                     serde_json::json!({"id":"visual-fixture","display_name":"Visual fixture"}),
@@ -64,6 +64,12 @@ impl eframe::App for Review {
                 self.at = Instant::now();
                 match self.stage {
                     1 => {
+                        // LAN casting on, with the receivers above; the
+                        // picker's own scan is marked done so none starts.
+                        self.app.settings.casting.allow_lan = true;
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("casting-output-scanned"), true)
+                        });
                         self.app.show_devices = true;
                     }
                     2 => {
@@ -114,6 +120,18 @@ impl eframe::App for Review {
                             sonicfast::casting::airplay::pairing::Stage::Failed;
                         self.app.airplay_pairing.message =
                             sonicfast::casting::airplay::pairing::Error::Authentication.to_string();
+                    }
+                    9 => {
+                        self.app.dialog = None;
+                        self.app.cast_check = sonicfast::casting::CastCheck {
+                            attempt: 900,
+                            settings: sonicfast::casting::Settings {
+                                name: "Garage Cast".into(),
+                                ..Default::default()
+                            },
+                            stage: sonicfast::casting::CheckStage::Untrusted { pinned: false },
+                        };
+                        self.app.dialog = Some(sonicfast::model::Dialog::CastFingerprint);
                     }
                     _ => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 }
@@ -178,6 +196,15 @@ fn main() -> eframe::Result {
             pairing: true,
             airplay2: true,
             reason: None,
+        },
+        sonicfast::casting::Receiver {
+            kind: sonicfast::casting::Kind::AirPlay,
+            name: "Office HomePod".into(),
+            address: "192.0.2.13:7000".parse().unwrap(),
+            supported: false,
+            pairing: false,
+            airplay2: true,
+            reason: Some("This receiver restricts access to its Apple Home members".into()),
         },
     ];
     app.casting_status = "Ready; press Play".into();

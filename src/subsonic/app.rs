@@ -111,6 +111,16 @@ impl App {
         self.server_rating_pending.contains(uri)
     }
 
+    /// Starts checking a Cast receiver; it becomes the output once verified.
+    fn check_cast(&mut self, settings: crate::casting::Settings) {
+        self.cast_check.attempt = self.cast_check.attempt.wrapping_add(1);
+        self.cast_check.stage = crate::casting::CheckStage::Checking;
+        self.cast_check.settings = settings.clone();
+        self.backend.send(Command::Subsonic(Request::CheckCast {
+            attempt: self.cast_check.attempt,
+            settings,
+        }));
+    }
     pub(super) fn subsonic_event(&mut self, event: S) {
         match event {
             S::AirPlayPairing(status) => {
@@ -132,6 +142,39 @@ impl App {
                 }
             }
             S::CastingStatus(status) => self.casting_status = status,
+            S::CastCheck { attempt, trust } => {
+                use crate::casting::{CheckStage, Trust};
+                if attempt != self.cast_check.attempt
+                    || self.cast_check.stage != CheckStage::Checking
+                {
+                    return;
+                }
+                let dialog = matches!(self.dialog, Some(Dialog::CastFingerprint));
+                match trust {
+                    Trust::Verified => {
+                        self.cast_check.stage = CheckStage::Idle;
+                        self.cast_fingerprint.clear();
+                        if dialog {
+                            self.dialog = None;
+                        }
+                        self.actions
+                            .push(Action::CastingSettings(self.cast_check.settings.clone()));
+                    }
+                    Trust::Untrusted { pinned } => {
+                        self.cast_check.stage = CheckStage::Untrusted { pinned };
+                        self.show_devices = false;
+                        self.dialog = Some(Dialog::CastFingerprint);
+                    }
+                    Trust::Unreachable if dialog => {
+                        self.cast_check.stage = CheckStage::Unreachable;
+                    }
+                    Trust::Unreachable => {
+                        self.cast_check.stage = CheckStage::Idle;
+                        let name = self.cast_check.settings.name.clone();
+                        self.toast_error(format!("Couldn't reach {name}"));
+                    }
+                }
+            }
             S::Receivers(result) => {
                 self.casting_scanning = false;
                 match result {
@@ -352,6 +395,33 @@ impl App {
                 Request::PairAirPlay { settings, force }
             }
             Action::SubmitAirPlayPin { attempt, pin } => Request::SubmitAirPlayPin { attempt, pin },
+            Action::ChooseCast(mut settings) => {
+                settings.output = Some(crate::casting::Kind::Chromecast);
+                if let Err(error) = settings.validate() {
+                    self.toast_error(&error);
+                    return None;
+                }
+                self.check_cast(settings);
+                return None;
+            }
+            Action::SubmitCastFingerprint => {
+                let Some(pin) = crate::casting::normalize_fingerprint(&self.cast_fingerprint)
+                else {
+                    self.toast_error("A fingerprint is 64 hexadecimal characters");
+                    return None;
+                };
+                let mut settings = self.cast_check.settings.clone();
+                settings.certificate_sha256 = pin;
+                self.check_cast(settings);
+                return None;
+            }
+            Action::CloseDialog if matches!(self.dialog, Some(Dialog::CastFingerprint)) => {
+                self.cast_fingerprint.clear();
+                self.dialog = None;
+                self.cast_check.stage = crate::casting::CheckStage::Idle;
+                self.cast_check.attempt = self.cast_check.attempt.wrapping_add(1);
+                return None;
+            }
             Action::CancelAirPlayPairing(attempt) => {
                 self.airplay_pin.clear();
                 self.dialog = None;
@@ -395,7 +465,9 @@ impl App {
                 }
                 return None;
             }
-            Action::CastingSettings(settings) => {
+            Action::CastingSettings(mut settings) => {
+                settings.cast_fingerprints = self.settings.casting.cast_fingerprints.clone();
+                settings.remember_fingerprint();
                 if let Err(error) = settings.validate_with_snapcast(&self.settings.snapcast) {
                     self.toast_error(&error);
                     return None;

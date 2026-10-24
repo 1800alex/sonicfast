@@ -49,8 +49,37 @@ pub(crate) struct MediaConnection {
     transport: String,
     request: u64,
 }
+/// A Cast receiver that answered but did not prove its identity: not a
+/// genuine Google Cast device without a pin, or not the pinned certificate.
+#[derive(Debug)]
+pub(crate) struct Untrusted;
+impl std::fmt::Display for Untrusted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the Cast receiver did not prove its identity")
+    }
+}
+impl std::error::Error for Untrusted {}
+
 impl MediaConnection {
     pub(crate) fn connect(target: SocketAddr, pin: &str, deadline: Instant) -> Result<Self> {
+        let mut stream = Self::open(target, pin, deadline)?;
+        let mut channel = Channel {
+            stream: &mut stream,
+            deadline,
+        };
+        let transport = channel.launch_media()?;
+        Ok(Self {
+            stream,
+            transport,
+            request: 10,
+        })
+    }
+    /// Checks the receiver's identity without launching anything on it.
+    /// Identity failures are [`Untrusted`]; anything else is unreachable.
+    pub(crate) fn check(target: SocketAddr, pin: &str, deadline: Instant) -> Result<()> {
+        Self::open(target, pin, deadline).map(drop)
+    }
+    fn open(target: SocketAddr, pin: &str, deadline: Instant) -> Result<TlsStream> {
         if Instant::now() >= deadline {
             bail!("Cast connection deadline exceeded");
         }
@@ -59,24 +88,21 @@ impl MediaConnection {
             stream: &mut stream,
             deadline,
         };
-        if pin.is_empty() {
-            channel.authenticate(&GOOGLE_ROOTS, UnixTime::now())?;
+        let proven = if pin.is_empty() {
+            channel.authenticate(&GOOGLE_ROOTS, UnixTime::now())
         } else {
             use sha2::{Digest, Sha256};
-            let certificate = channel
-                .stream
-                .peer_certificate()
-                .ok_or_else(|| anyhow!("No receiver certificate"))?;
-            if !format!("{:x}", Sha256::digest(certificate)).eq_ignore_ascii_case(pin) {
-                bail!("Receiver certificate fingerprint does not match");
+            match channel.stream.peer_certificate() {
+                Some(certificate)
+                    if format!("{:x}", Sha256::digest(certificate)).eq_ignore_ascii_case(pin) =>
+                {
+                    Ok(())
+                }
+                _ => Err(anyhow!("Receiver certificate fingerprint does not match")),
             }
-        }
-        let transport = channel.launch_media()?;
-        Ok(Self {
-            stream,
-            transport,
-            request: 10,
-        })
+        };
+        proven.map_err(|_| anyhow::Error::new(Untrusted))?;
+        Ok(stream)
     }
     pub(crate) fn local_ip(&self) -> Result<IpAddr> {
         Ok(self.stream.sock.local_addr()?.ip())

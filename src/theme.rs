@@ -428,6 +428,7 @@ fastframe_icons::icons! {
     pub enum Icon {
         prefix: "sonicfast-icon-",
         directory: "../assets/icons/",
+        Airplay => "airplay",
         ArrowLeft => lucide "arrow-left",
         ArrowRight => "arrow-right",
         AudioLines => "audio-lines",

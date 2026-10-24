@@ -41,6 +41,17 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    /// Whether Send has been set up (trusted network and a valid server), so
+    /// the output picker can offer Snapcast.
+    pub fn can_send(&self) -> bool {
+        self.allow_insecure
+            && Settings {
+                send: true,
+                ..self.clone()
+            }
+            .validate()
+            .is_ok()
+    }
     pub fn validate(&self) -> Result<(), String> {
         if !self.send && !self.receive {
             return Ok(());
@@ -154,6 +165,15 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sending_is_offered_only_once_the_server_is_set_up() {
+        let mut settings = Settings::default();
+        assert!(!settings.can_send(), "a fresh install has not consented");
+        settings.allow_insecure = true;
+        assert!(settings.can_send());
+        settings.host = "http://bad".into();
+        assert!(!settings.can_send());
+    }
     #[test]
     fn old_settings_are_disabled_and_explicit_consent_is_required() {
         let mut settings: Settings = serde_json::from_str("{}").unwrap();

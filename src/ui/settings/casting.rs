@@ -3,7 +3,7 @@ use crate::{
     app::App,
     casting::{Kind, Settings},
     model::Action,
-    theme,
+    theme::{self, Icon},
     ui::widgets,
 };
 pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
@@ -123,7 +123,12 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
             if theme::soft_button(ui, &palette, None, "Reconnect", false).clicked() {
                 let mut settings = draft.clone();
                 settings.output = Some(settings.kind(app.settings.snapcast.send));
-                app.actions.push(Action::CastingSettings(settings));
+                app.actions
+                    .push(if settings.output == Some(Kind::Chromecast) {
+                        Action::ChooseCast(settings)
+                    } else {
+                        Action::CastingSettings(settings)
+                    });
             }
         });
         if draft.kind(app.settings.snapcast.send) == Kind::AirPlay {
@@ -170,127 +175,261 @@ pub(crate) fn show(app: &mut App, ui: &mut egui::Ui, needle: &str) -> bool {
     }
     true
 }
+/// One output: its kind's icon and name, a check when it is in use, a
+/// spinner while it is being checked. Unsupported receivers are dimmed and
+/// say why on hover. Returns whether it was chosen.
+fn output_row(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    icon: Icon,
+    name: &str,
+    state: RowState,
+    reason: Option<&str>,
+) -> bool {
+    use egui::{Rect, Sense, Vec2, pos2, vec2};
+    let enabled = reason.is_none();
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), 40.0),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            enabled,
+            state == RowState::Selected,
+            name,
+        )
+    });
+    if response.hovered() && enabled {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(6), palette.surface_hover);
+    }
+    let color = match state {
+        _ if !enabled => palette.secondary.gamma_multiply(0.6),
+        RowState::Selected => palette.accent,
+        _ => palette.text,
+    };
+    icon.image(color, 20.0).paint_at(
+        ui,
+        Rect::from_center_size(pos2(rect.left() + 22.0, rect.center().y), Vec2::splat(20.0)),
+    );
+    crate::bidi::paint_line(
+        &ui.painter().with_clip_rect(rect),
+        rect.left() + 44.0,
+        rect.right() - 36.0,
+        rect.center().y,
+        name,
+        theme::medium(14.0),
+        color,
+    );
+    let mark = Rect::from_center_size(
+        pos2(rect.right() - 18.0, rect.center().y),
+        Vec2::splat(16.0),
+    );
+    match state {
+        RowState::Selected => Icon::Check.image(palette.accent, 16.0).paint_at(ui, mark),
+        RowState::Busy => {
+            let mut spin = ui.new_child(egui::UiBuilder::new().max_rect(mark).layout(
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            ));
+            theme::spinner(&mut spin, 16.0, palette.accent);
+        }
+        RowState::Idle => {}
+    }
+    if let Some(reason) = reason {
+        response.on_hover_text(reason);
+        return false;
+    }
+    response.clicked() && state != RowState::Selected
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowState {
+    Idle,
+    Selected,
+    Busy,
+}
+
+/// AirPlay before Cast, then by name; one list for the picker.
+fn sorted_receivers(mut receivers: Vec<crate::casting::Receiver>) -> Vec<crate::casting::Receiver> {
+    receivers.sort_by_cached_key(|r| (r.kind != Kind::AirPlay, r.name.to_lowercase()));
+    receivers
+}
+
 pub(crate) fn popup(app: &mut App, ctx: &egui::Context) {
+    let scanned_id = egui::Id::new("casting-output-scanned");
     if !app.show_devices {
+        ctx.data_mut(|d| d.remove::<bool>(scanned_id));
         return;
     }
-    let mut open = true;
+    let palette = app.palette;
     let anchor = ctx
         .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(super::super::devices::BUTTON_RECT_ID)))
         .unwrap_or(egui::Rect::from_min_size(
             egui::pos2(400.0, 500.0),
             egui::Vec2::ZERO,
         ));
-    egui::Window::new("Audio output")
-        .id(egui::Id::new("casting-output-picker"))
-        .open(&mut open)
-        .default_width(360.0)
-        .pivot(egui::Align2::RIGHT_BOTTOM)
-        .fixed_pos(egui::pos2(anchor.right(), (anchor.top() - 12.0).max(8.0)))
-        .resizable(false)
-        .max_height(500.0)
-        .vscroll(true)
-        .collapsible(false)
+    let settings = app.settings.casting.clone();
+    let active = settings.kind(app.settings.snapcast.send);
+    // Look for receivers once each time the picker opens.
+    if settings.allow_lan
+        && !app.casting_scanning
+        && !ctx.data(|d| d.get_temp::<bool>(scanned_id).unwrap_or(false))
+    {
+        ctx.data_mut(|d| d.insert_temp(scanned_id, true));
+        app.actions.push(Action::DiscoverOutputs);
+    }
+    let width = 300.0;
+    let area = egui::Area::new(egui::Id::new("casting-output-picker"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(
+            (anchor.right() - width).max(8.0),
+            (anchor.top() - 12.0).max(8.0),
+        ))
+        .pivot(egui::Align2::LEFT_BOTTOM)
         .show(ctx, |ui| {
-            let palette = app.palette;
-            let active = app.settings.casting.kind(app.settings.snapcast.send);
-            receiving_warning(app, ui);
-            for kind in [Kind::Local, Kind::Snapcast] {
-                if theme::soft_button(ui, &palette, None, kind.label(), active == kind).clicked() {
-                    let mut s = app.settings.casting.clone();
-                    s.output = Some(kind);
-                    app.actions.push(Action::CastingSettings(s));
-                }
-            }
-            ui.separator();
-            let mut allow = app.settings.casting.allow_lan;
-            if ui
-                .horizontal(|ui| {
-                    ui.label("Allow LAN casting");
-                    widgets::switch(ui, &palette, "Allow LAN casting", &mut allow)
-                })
-                .inner
-                .changed()
-            {
-                app.actions.push(Action::CastingSettings(Settings {
-                    allow_lan: allow,
-                    output: if !allow && matches!(active, Kind::AirPlay | Kind::Chromecast) {
-                        Some(Kind::Local)
-                    } else {
-                        app.settings.casting.output
-                    },
-                    ..app.settings.casting.clone()
-                }));
-            }
-            if theme::soft_button(ui, &palette, None, "Find receivers", false).clicked() {
-                app.actions.push(Action::DiscoverOutputs);
-            }
-            if app.casting_scanning {
-                ui.spinner();
-            }
-            for receiver in app.casting_receivers.clone() {
-                let selected = active == receiver.kind
-                    && app.settings.casting.host == receiver.address.ip().to_string()
-                    && app.settings.casting.port == receiver.address.port();
-                ui.add_enabled_ui(receiver.supported, |ui| {
-                    if theme::soft_button(
-                        ui,
-                        &palette,
-                        None,
-                        &format!("{} · {}", receiver.name, receiver.kind.label()),
-                        selected,
-                    )
-                    .clicked()
-                    {
-                        let settings = Settings {
-                            output: Some(receiver.kind),
-                            host: receiver.address.ip().to_string(),
-                            port: receiver.address.port(),
-                            name: receiver.name.clone(),
-                            allow_lan: allow,
-                            certificate_sha256: if app.settings.casting.host
-                                == receiver.address.ip().to_string()
-                                && app.settings.casting.port == receiver.address.port()
-                            {
-                                app.settings.casting.certificate_sha256.clone()
-                            } else {
-                                String::new()
-                            },
-                            airplay2: receiver.airplay2,
-                        };
-                        app.actions.push(if receiver.pairing {
-                            Action::PairAirPlay {
-                                settings,
-                                force: false,
-                            }
-                        } else {
-                            Action::CastingSettings(settings)
-                        });
-                    }
+            widgets::menu_frame(&palette).show(ui, |ui| {
+                ui.set_width(width);
+                ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    theme::text(ui, "Audio output", theme::bold(16.0), palette.text);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if app.casting_scanning {
+                            theme::spinner(ui, 16.0, palette.accent);
+                        } else if settings.allow_lan
+                            && theme::icon_button(
+                                ui,
+                                Icon::Refresh,
+                                15.0,
+                                palette.secondary,
+                                palette.text,
+                                "Find receivers",
+                            )
+                            .clicked()
+                        {
+                            app.actions.push(Action::DiscoverOutputs);
+                        }
+                    });
                 });
-                if !receiver.supported {
-                    theme::subtle(
+                ui.add_space(4.0);
+                receiving_warning(app, ui);
+                let choose = |kind| {
+                    Action::CastingSettings(Settings {
+                        output: Some(kind),
+                        ..settings.clone()
+                    })
+                };
+                let state = |selected| {
+                    if selected {
+                        RowState::Selected
+                    } else {
+                        RowState::Idle
+                    }
+                };
+                if output_row(
+                    ui,
+                    &palette,
+                    Icon::Speaker,
+                    "This device",
+                    state(active == Kind::Local),
+                    None,
+                ) {
+                    app.actions.push(choose(Kind::Local));
+                }
+                if (active == Kind::Snapcast || app.settings.snapcast.can_send())
+                    && output_row(
                         ui,
                         &palette,
-                        receiver
-                            .reason
-                            .as_deref()
-                            .unwrap_or("Receiver is not supported"),
-                    );
-                } else if receiver.pairing {
-                    theme::subtle(ui, &palette, "AirPlay · on-screen PIN on first connection");
+                        Icon::Cast,
+                        "Snapcast",
+                        state(active == Kind::Snapcast),
+                        None,
+                    )
+                {
+                    app.actions.push(choose(Kind::Snapcast));
                 }
-            }
-            theme::subtle(ui, &palette, &app.casting_status);
-            if theme::soft_button(ui, &palette, None, "Output settings…", false).clicked() {
-                app.actions.push(Action::Open(crate::model::Page::Settings));
-                open_settings(app);
-            }
+                if settings.allow_lan {
+                    let checking = (app.cast_check.stage == crate::casting::CheckStage::Checking)
+                        .then_some(&app.cast_check.settings);
+                    egui::ScrollArea::vertical()
+                        .id_salt("casting-receivers")
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            for receiver in sorted_receivers(app.casting_receivers.clone()) {
+                                let host = receiver.address.ip().to_string();
+                                let port = receiver.address.port();
+                                let here = |s: &Settings| s.host == host && s.port == port;
+                                let row = if checking.is_some_and(here) {
+                                    RowState::Busy
+                                } else {
+                                    state(active == receiver.kind && here(&settings))
+                                };
+                                let icon = if receiver.kind == Kind::AirPlay {
+                                    Icon::Airplay
+                                } else {
+                                    Icon::Cast
+                                };
+                                ui.push_id((&host, port, receiver.kind.label()), |ui| {
+                                    if output_row(
+                                        ui,
+                                        &palette,
+                                        icon,
+                                        &receiver.name,
+                                        row,
+                                        receiver.reason.as_deref(),
+                                    ) {
+                                        let chosen = settings.for_receiver(&receiver);
+                                        app.actions.push(match receiver.kind {
+                                            Kind::Chromecast => Action::ChooseCast(chosen),
+                                            _ if receiver.pairing => Action::PairAirPlay {
+                                                settings: chosen,
+                                                force: false,
+                                            },
+                                            _ => Action::CastingSettings(chosen),
+                                        });
+                                    }
+                                });
+                            }
+                        });
+                }
+                widgets::menu_separator(ui, &palette);
+                if !settings.allow_lan {
+                    let mut allow = false;
+                    ui.horizontal(|ui| {
+                        ui.add_space(6.0);
+                        ui.label("Find AirPlay and Cast receivers");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if widgets::switch(ui, &palette, "Allow LAN casting", &mut allow)
+                                .changed()
+                            {
+                                app.actions.push(Action::CastingSettings(Settings {
+                                    allow_lan: true,
+                                    ..settings.clone()
+                                }));
+                            }
+                        });
+                    });
+                }
+                if widgets::menu_item(ui, &palette, Some(Icon::Settings), "Output settings…") {
+                    app.actions.push(Action::Open(crate::model::Page::Settings));
+                    app.show_devices = false;
+                }
+            });
         });
-    app.show_devices &= open;
-}
-fn open_settings(app: &mut App) {
-    app.show_devices = false;
+    let popup_rect = area.response.rect;
+    let clicked_outside = ctx.input(|input| {
+        input.pointer.any_pressed()
+            && input
+                .pointer
+                .interact_pos()
+                .is_some_and(|pos| !popup_rect.contains(pos) && !anchor.contains(pos))
+    });
+    if clicked_outside {
+        app.show_devices = false;
+    }
 }
 
 fn receiving_warning(app: &App, ui: &mut egui::Ui) {

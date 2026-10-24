@@ -7,6 +7,80 @@ use crate::i18n::{Locale, gettext, ngettext};
 use crate::model::{Action, Dialog};
 use crate::theme;
 
+/// A Cast receiver that did not prove its identity: offer to pin its
+/// certificate. Nothing is saved until the pinned receiver verifies.
+fn cast_fingerprint(app: &mut App, ui: &mut egui::Ui) {
+    use crate::casting::CheckStage;
+    let palette = app.palette;
+    let check = app.cast_check.clone();
+    let name = if check.settings.name.is_empty() {
+        check.settings.host.clone()
+    } else {
+        check.settings.name.clone()
+    };
+    theme::text(ui, "Verify Cast receiver", theme::bold(20.0), palette.text);
+    ui.add_space(8.0);
+    let message = match check.stage {
+        CheckStage::Untrusted { pinned: true } => format!(
+            "“{name}” no longer matches its saved fingerprint. Paste a new one only if you replaced or reset this receiver."
+        ),
+        CheckStage::Unreachable => {
+            format!("Couldn't reach “{name}”. Check it is on, then try again.")
+        }
+        _ => format!(
+            "“{name}” isn't a verified Google Cast device. If it's a self-hosted receiver you trust, paste its SHA-256 certificate fingerprint."
+        ),
+    };
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(message)
+                .font(theme::regular(14.0))
+                .color(palette.secondary),
+        )
+        .wrap(),
+    );
+    ui.add_space(12.0);
+    let checking = check.stage == CheckStage::Checking;
+    let response = ui
+        .add_enabled_ui(!checking, |ui| {
+            crate::ui::widgets::text_edit(
+                ui,
+                app.locale,
+                egui::TextEdit::singleline(&mut app.cast_fingerprint)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("AB:CD:… or abcd…")
+                    .desired_width(f32::INFINITY),
+            )
+        })
+        .inner;
+    if app.cast_fingerprint.is_empty() && !checking {
+        response.request_focus();
+    }
+    let valid = crate::casting::normalize_fingerprint(&app.cast_fingerprint).is_some();
+    if !app.cast_fingerprint.is_empty() && !valid {
+        theme::subtle(ui, &palette, "A fingerprint is 64 hexadecimal characters.");
+    }
+    ui.add_space(16.0);
+    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+    buttons(ui, |ui| {
+        if checking {
+            theme::spinner(ui, 16.0, palette.accent);
+        } else if ui
+            .add_enabled_ui(valid, |ui| {
+                theme::pill_button(ui, &palette, "Connect", true)
+            })
+            .inner
+            .clicked()
+            || (enter && valid)
+        {
+            app.actions.push(Action::SubmitCastFingerprint);
+        }
+        if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
+            app.actions.push(Action::CloseDialog);
+        }
+    });
+}
+
 pub fn show(app: &mut App, ctx: &egui::Context) {
     let Some(dialog) = app.dialog.clone() else {
         return;
@@ -64,6 +138,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     ui.add_space(12.0);
                     if theme::pill_button(ui, &palette, "Cancel", false).clicked() { app.actions.push(Action::CancelAirPlayPairing(status.attempt)); }
                 }
+                Dialog::CastFingerprint => cast_fingerprint(app, ui),
                 Dialog::ServerConnections => {
                     if app.server_form.editing { crate::subsonic::ui::connection_form(app, ui); }
                     else { crate::subsonic::ui::connections(app, ui); }

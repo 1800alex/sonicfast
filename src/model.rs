@@ -971,6 +971,7 @@ pub struct DragEntry {
 #[derive(Clone, Debug)]
 pub enum Dialog {
     AirPlayPairing,
+    CastFingerprint,
     ServerConnections,
     ConfirmRemoveServer {
         id: String,
@@ -1130,6 +1131,10 @@ pub enum Action {
     },
     CancelAirPlayPairing(u64),
     UseAirPlayPairing(u64),
+    /// Checks a Cast receiver's identity, then makes it the output.
+    ChooseCast(crate::casting::Settings),
+    /// Rechecks the receiver being chosen with the fingerprint in the dialog.
+    SubmitCastFingerprint,
     LibrarySettings {
         scrobble: libresonic::playback::scrobble::ScrobbleSettings,
         downloads: crate::subsonic::downloads::Settings,

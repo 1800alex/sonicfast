@@ -15,3 +15,4 @@
 - [x] Add "Sync" now button refresh the subsonic api backend (if it's needed?)
 - [x] We need to then update the docs for the connection list changes
 - [ ] AirPlay now-playing metadata (title/artist/album/cover/progress) is written and unit-tested in code only: not compiled or run yet. Run `make test`, then check on Shairport Sync (with a metadata front end) and the Pioneer VSX-1123 / Roku that text, cover and progress appear and update on track change and seek.
+- [ ] Cast receiver check + fingerprint dialog (2026-10-24) is unit-tested and screenshotted only. Pick a self-hosted Cast receiver (e.g. the Docker software target from `make casting-test`) in the output picker: confirm the Verify dialog opens, a pasted fingerprint connects and is reused next time, and a genuine Chromecast connects with no dialog. Consider adding the unpinned→dialog path to `integration/casting/test.py`.

@@ -6146,7 +6146,7 @@ dependencies = [
 
 [[package]]
 name = "sonicfast"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "aes 0.8.4",
  "anyhow",
